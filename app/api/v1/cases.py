@@ -2,10 +2,19 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, desc
 from typing import List, Optional
+from datetime import datetime
 
 from app.core.database import get_db
 from app.models.case import Case
-from app.schemas.case import CaseCreate, CaseUpdate, CaseResponse
+from app.schemas.case import (
+    CaseCreate,
+    CaseUpdate,
+    CaseResponse,
+    CaseDispatch,
+    CaseNoteCreate,
+    CaseResolve,
+    CasePublicResponse,
+)
 
 router = APIRouter(prefix="/cases", tags=["Casos Ciudadanos"])
 
@@ -95,6 +104,115 @@ def update_case(case_id: str, case_update: CaseUpdate, db: Session = Depends(get
     for field, value in update_data.items():
         setattr(case_item, field, value)
 
+    db.commit()
+    db.refresh(case_item)
+    return case_item
+
+@router.post("/{case_id}/dispatch", response_model=CaseResponse)
+def dispatch_case(case_id: str, payload: CaseDispatch, db: Session = Depends(get_db)):
+    """Despacha un caso a una Secretaría o entidad de Neiva, cambiando estado a En Gestión."""
+    case_item = db.query(Case).filter(Case.id == case_id).first()
+    if not case_item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Caso con id '{case_id}' no encontrado",
+        )
+    case_item.assigned_department = payload.assigned_department
+    if payload.assigned_to:
+        case_item.assigned_to = payload.assigned_to
+    case_item.status = "En Gestión"
+
+    if payload.note:
+        now_str = datetime.now().strftime("%d %b %Y, %H:%M")
+        new_note = f"[{now_str}] [Despacho a {payload.assigned_department}]: {payload.note}"
+        if case_item.internal_notes:
+            case_item.internal_notes = f"{case_item.internal_notes}\n{new_note}"
+        else:
+            case_item.internal_notes = new_note
+
+    db.commit()
+    db.refresh(case_item)
+    return case_item
+
+@router.post("/{case_id}/notes", response_model=CaseResponse)
+def add_case_note(case_id: str, payload: CaseNoteCreate, db: Session = Depends(get_db)):
+    """Registra una nota interna de seguimiento en la bitácora del caso."""
+    case_item = db.query(Case).filter(Case.id == case_id).first()
+    if not case_item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Caso con id '{case_id}' no encontrado",
+        )
+    now_str = datetime.now().strftime("%d %b %Y, %H:%M")
+    new_note = f"[{now_str}] {payload.author_name}: {payload.note}"
+    if case_item.internal_notes:
+        case_item.internal_notes = f"{case_item.internal_notes}\n{new_note}"
+    else:
+        case_item.internal_notes = new_note
+
+    db.commit()
+    db.refresh(case_item)
+    return case_item
+
+@router.post("/{case_id}/resolve", response_model=CaseResponse)
+def resolve_case(case_id: str, payload: CaseResolve, db: Session = Depends(get_db)):
+    """Marca un caso como Resuelto, registrando la nota de cierre técnico y responsable."""
+    case_item = db.query(Case).filter(Case.id == case_id).first()
+    if not case_item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Caso con id '{case_id}' no encontrado",
+        )
+    case_item.status = "Resuelto"
+    case_item.resolution_note = payload.resolution_note
+    case_item.resolved_by = payload.resolved_by
+
+    now_str = datetime.now().strftime("%d %b %Y, %H:%M")
+    close_note = f"[{now_str}] [Caso Resuelto por {payload.resolved_by}]: {payload.resolution_note}"
+    if case_item.internal_notes:
+        case_item.internal_notes = f"{case_item.internal_notes}\n{close_note}"
+    else:
+        case_item.internal_notes = close_note
+
+    db.commit()
+    db.refresh(case_item)
+    return case_item
+
+@router.post("/{case_id}/priority-action", response_model=CaseResponse)
+def toggle_priority_action(case_id: str, db: Session = Depends(get_db)):
+    """Alterna la declaratoria de Prioridad Inmediata de la Alcaldía de Neiva."""
+    case_item = db.query(Case).filter(Case.id == case_id).first()
+    if not case_item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Caso con id '{case_id}' no encontrado",
+        )
+    case_item.priority_action = not (case_item.priority_action or False)
+    now_str = datetime.now().strftime("%d %b %Y, %H:%M")
+    if case_item.priority_action:
+        alert_note = f"[{now_str}] [Alcaldía de Neiva - Despacho]: Se ha declarado PRIORIDAD DE INTERVENCIÓN INMEDIATA para este caso."
+    else:
+        alert_note = f"[{now_str}] [Alcaldía de Neiva - Despacho]: Se retira la declaratoria de prioridad inmediata."
+    
+    if case_item.internal_notes:
+        case_item.internal_notes = f"{case_item.internal_notes}\n{alert_note}"
+    else:
+        case_item.internal_notes = alert_note
+
+    db.commit()
+    db.refresh(case_item)
+    return case_item
+
+@router.post("/{case_id}/public-response", response_model=CaseResponse)
+def set_public_response(case_id: str, payload: CasePublicResponse, db: Session = Depends(get_db)):
+    """Guarda la respuesta institucional oficial redactada para redes sociales."""
+    case_item = db.query(Case).filter(Case.id == case_id).first()
+    if not case_item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Caso con id '{case_id}' no encontrado",
+        )
+    case_item.public_response = payload.public_response
     db.commit()
     db.refresh(case_item)
     return case_item
