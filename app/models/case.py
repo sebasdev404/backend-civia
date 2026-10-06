@@ -29,6 +29,9 @@ class Case(Base):
     resolution_note = Column(Text, nullable=True)             # Nota de cierre técnico
     resolved_by = Column(String(100), nullable=True)          # Usuario / Secretario que resolvió
     priority_action = Column(Boolean, default=False)          # Declaratoria de prioridad inmediata por el Alcalde
+    institutional_radicado = Column(String(100), nullable=True) # Radicado oficial del sistema de correspondencia
+    requires_followup = Column(Boolean, default=False)        # Necesidad probable de seguimiento
+    comments_count = Column(String(10), default="1")          # Cantidad de comentarios agrupados
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())

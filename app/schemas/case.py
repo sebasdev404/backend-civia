@@ -27,6 +27,9 @@ class CaseBase(BaseModel):
     resolution_note: Optional[str] = None
     resolved_by: Optional[str] = None
     priority_action: Optional[bool] = False
+    institutional_radicado: Optional[str] = None
+    requires_followup: Optional[bool] = False
+    comments_count: Optional[str] = "1"
 
 class CaseCreate(CaseBase):
     id: Optional[str] = None
@@ -45,6 +48,9 @@ class CaseUpdate(BaseModel):
     resolution_note: Optional[str] = None
     resolved_by: Optional[str] = None
     priority_action: Optional[bool] = None
+    institutional_radicado: Optional[str] = None
+    requires_followup: Optional[bool] = None
+    comments_count: Optional[str] = None
 
 class CaseDispatch(BaseModel):
     assigned_department: str
