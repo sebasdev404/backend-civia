@@ -353,6 +353,14 @@ INITIAL_INCIDENTS = [
 
 DEFAULT_USERS = [
     {
+        "id": "USR-000",
+        "email": "admin@civia.gov.co",
+        "full_name": "Ing. Sofía Valderrama",
+        "role": "ADMIN",
+        "department": "Dirección de Tecnologías y Seguridad TI",
+        "password": "civia2026",
+    },
+    {
         "id": "USR-001",
         "email": "alcalde@civia.gov.co",
         "full_name": "Johan Steed",

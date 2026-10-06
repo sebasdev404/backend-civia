@@ -11,7 +11,7 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
     full_name = Column(String, nullable=False)
-    role = Column(String, nullable=False, default="OPERADOR")  # "ALCALDE", "SECRETARIO", "OPERADOR"
+    role = Column(String, nullable=False, default="OPERADOR")  # "ADMIN", "ALCALDE", "SECRETARIO", "OPERADOR"
     department = Column(String, nullable=True)
     avatar_url = Column(String, nullable=True)
     is_active = Column(Boolean, default=True)
