@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     # Configuración de Inteligencia Artificial (OpenAI)
     OPENAI_API_KEY: Optional[str] = None
 
+    # Configuración de Integración con Meta (Facebook & Instagram)
+    META_APP_ID: Optional[str] = None
+    META_APP_SECRET: Optional[str] = None
+    META_VERIFY_TOKEN: str = "civia_meta_webhook_neiva_2026"
+    META_PAGE_ACCESS_TOKEN: Optional[str] = None
+
     class Config:
         env_file = _ENV_PATH
         case_sensitive = True

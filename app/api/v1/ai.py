@@ -106,3 +106,4 @@ def match_comment_against_open_cases(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error buscando casos afines: {str(e)}"
         )
+
