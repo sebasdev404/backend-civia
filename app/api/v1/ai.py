@@ -107,3 +107,112 @@ def match_comment_against_open_cases(
             detail=f"Error buscando casos afines: {str(e)}"
         )
 
+
+@router.get("/credits")
+def get_ai_credits_info(db: Session = Depends(get_db)):
+    """
+    Monitorea el estado de la API Key de OpenAI, conectividad en tiempo real,
+    estimación de tokens y costo acumulado de los casos clasificados en CIVIA,
+    e intenta obtener saldo si se dispone de token con scope de administración.
+    """
+    import os
+    import time
+    import urllib.request
+    import urllib.error
+    import json
+    from app.core.config import settings
+
+    api_key = settings.OPENAI_API_KEY or os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return {
+            "status": "No configurada",
+            "has_key": False,
+            "quota_status": "Sin llave API",
+            "latency_ms": 0,
+            "cases_analyzed": 0,
+            "estimated_tokens": 0,
+            "estimated_cost_usd": 0.0,
+            "model": "Local / Heurístico",
+            "masked_key": "No configurada",
+            "billing_url": "https://platform.openai.com/settings/organization/billing/overview",
+            "detail": "Configure OPENAI_API_KEY en backend-civia/.env"
+        }
+
+    masked_key = f"{api_key[:8]}...{api_key[-4:]}" if len(api_key) > 12 else "sk-***"
+    
+    # 1. Contar casos analizados en PostgreSQL
+    cases_analyzed = db.query(Case).count()
+    # Cada caso consume aprox 350 tokens (prompt + respuesta JSON estructurada)
+    estimated_tokens = cases_analyzed * 350
+    # GPT-4o-mini cuesta aprox $0.15 por 1M tokens de entrada y $0.60 por 1M de salida -> promedio $0.25 / 1M
+    estimated_cost_usd = round((estimated_tokens / 1_000_000) * 0.25, 4)
+
+    # 2. Test en vivo a OpenAI para verificar saldo / conectividad / latencia
+    status_msg = "Activo / Conectado"
+    quota_status = "Cuota disponible (Operativo)"
+    latency_ms = 0
+    balance_amount = None
+    currency = "USD"
+    
+    t0 = time.time()
+    try:
+        req = urllib.request.Request(
+            "https://api.openai.com/v1/models",
+            headers={"Authorization": f"Bearer {api_key}"}
+        )
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            latency_ms = round((time.time() - t0) * 1000, 1)
+            if resp.status == 200:
+                status_msg = "Conectado / Operativo"
+                quota_status = "Cuota disponible (Activa)"
+    except urllib.error.HTTPError as e:
+        latency_ms = round((time.time() - t0) * 1000, 1)
+        if e.code == 429:
+            status_msg = "Cuota Agotada"
+            quota_status = "Alerta: Saldo o límite de cuota alcanzado (HTTP 429)"
+        elif e.code == 401:
+            status_msg = "No Autorizado"
+            quota_status = "API Key no válida o revocada (HTTP 401)"
+        else:
+            status_msg = f"HTTP {e.code}"
+            quota_status = f"Respuesta inesperada: HTTP {e.code}"
+    except Exception as e:
+        status_msg = "Error de Red"
+        quota_status = f"No se pudo conectar a OpenAI: {str(e)}"
+
+    # 3. Intentar consultar balance si se cuenta con llave de organización o admin
+    admin_key = os.getenv("OPENAI_ADMIN_KEY") or api_key
+    try:
+        req_bal = urllib.request.Request(
+            "https://api.openai.com/v1/organization/billing/credit_balance",
+            headers={"Authorization": f"Bearer {admin_key}"}
+        )
+        with urllib.request.urlopen(req_bal, timeout=3) as resp_bal:
+            bal_data = json.loads(resp_bal.read().decode())
+            if "total_available" in bal_data:
+                balance_amount = bal_data.get("total_available")
+            elif "balance" in bal_data:
+                balance_amount = bal_data.get("balance")
+    except Exception:
+        pass
+
+    return {
+        "status": status_msg,
+        "has_key": True,
+        "quota_status": quota_status,
+        "latency_ms": latency_ms,
+        "cases_analyzed": cases_analyzed,
+        "estimated_tokens": estimated_tokens,
+        "estimated_cost_usd": estimated_cost_usd,
+        "model": "OpenAI GPT-4o-mini",
+        "masked_key": masked_key,
+        "balance_amount": balance_amount,
+        "currency": currency,
+        "billing_url": "https://platform.openai.com/settings/organization/billing/overview",
+        "detail": (
+            f"La llave de inferencia responde en {latency_ms} ms. "
+            f"Se han analizado {cases_analyzed:,} incidentes territoriales en Neiva con una inversión acumulada estimada de ${estimated_cost_usd} USD."
+        )
+    }
+
+

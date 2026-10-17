@@ -33,3 +33,30 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: UserResponse
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+class ForgotPasswordResponse(BaseModel):
+    message: str
+    email: str
+    dev_otp: Optional[str] = None  # Disponible en desarrollo para facilitar pruebas
+
+class VerifyOtpRequest(BaseModel):
+    email: str
+    otp_code: str
+
+class VerifyOtpResponse(BaseModel):
+    message: str
+    valid: bool
+
+class ResetPasswordRequest(BaseModel):
+    email: str
+    otp_code: str
+    new_password: str
+
+class ResetPasswordResponse(BaseModel):
+    message: str
+    access_token: str
+    token_type: str = "bearer"
+    user: UserResponse

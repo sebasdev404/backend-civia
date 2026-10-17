@@ -26,7 +26,7 @@ def get_cases(
     source: Optional[str] = Query(None, description="Filtrar por red social / canal"),
     status: Optional[str] = Query(None, description="Filtrar por estado: Pendiente, En Gestión, Resuelto"),
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(500, ge=1, le=1000),
     db: Session = Depends(get_db),
 ):
     query = db.query(Case)

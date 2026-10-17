@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict
-from typing import Optional
+from typing import Optional, Union
 from datetime import datetime
 
 class CaseBase(BaseModel):
@@ -29,7 +29,7 @@ class CaseBase(BaseModel):
     priority_action: Optional[bool] = False
     institutional_radicado: Optional[str] = None
     requires_followup: Optional[bool] = False
-    comments_count: Optional[str] = "1"
+    comments_count: Optional[Union[int, str]] = 1
 
 class CaseCreate(CaseBase):
     id: Optional[str] = None
@@ -50,7 +50,7 @@ class CaseUpdate(BaseModel):
     priority_action: Optional[bool] = None
     institutional_radicado: Optional[str] = None
     requires_followup: Optional[bool] = None
-    comments_count: Optional[str] = None
+    comments_count: Optional[Union[int, str]] = None
 
 class CaseDispatch(BaseModel):
     assigned_department: str

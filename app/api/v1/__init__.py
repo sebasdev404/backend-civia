@@ -6,6 +6,7 @@ from app.api.v1.analytics import router as analytics_router
 from app.api.v1.seed import router as seed_router
 from app.api.v1.ai import router as ai_router
 from app.api.v1.meta import router as meta_router
+from app.api.v1.system import router as system_router
 
 api_v1_router = APIRouter()
 
@@ -16,3 +17,4 @@ api_v1_router.include_router(analytics_router)
 api_v1_router.include_router(seed_router)
 api_v1_router.include_router(ai_router)
 api_v1_router.include_router(meta_router)
+api_v1_router.include_router(system_router)

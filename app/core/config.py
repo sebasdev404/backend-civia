@@ -28,6 +28,15 @@ class Settings(BaseSettings):
     META_APP_SECRET: Optional[str] = None
     META_VERIFY_TOKEN: str = "civia_meta_webhook_neiva_2026"
     META_PAGE_ACCESS_TOKEN: Optional[str] = None
+    META_PAGE_ID: Optional[str] = "275486829735525"
+
+    # Configuración de Servidor de Correos (SMTP / OTP)
+    SMTP_HOST: Optional[str] = None
+    SMTP_PORT: int = 587
+    SMTP_USER: Optional[str] = None
+    SMTP_PASSWORD: Optional[str] = None
+    SMTP_FROM_EMAIL: str = "notificaciones@civia.gov.co"
+    SMTP_TLS: bool = True
 
     class Config:
         env_file = _ENV_PATH
