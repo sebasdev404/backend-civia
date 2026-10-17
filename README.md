@@ -98,3 +98,4 @@ uvicorn main:app --port 8000 --reload
   - `GET /webhook` / `POST /webhook`: Escucha de eventos en vivo desde Meta Webhooks.
 - **Servicio de Inteligencia Artificial (`/api/v1/ai`):**
   - `POST /classify`: Clasificación semántica de comentarios y PQR con detección de sentimiento y prioridad automática.
+
