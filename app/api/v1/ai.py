@@ -216,3 +216,51 @@ def get_ai_credits_info(db: Session = Depends(get_db)):
     }
 
 
+
+
+class SmartReplyRequest(BaseModel):
+    comment_text: str = Field(..., description="Texto del comentario o crítica del ciudadano")
+    author_metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    user_type: Optional[str] = "Negativo"
+
+@router.post("/generate-smart-reply")
+def generate_smart_reply(payload: SmartReplyRequest):
+    """
+    Genera una respuesta inteligente institucional contextual,
+    desescalando críticas de odio, neutralizando bots o respondiendo técnicamente a temas
+    como PAE ('Por mi crítica salvé el PAE'), Malla Vial, Acueducto o Seguridad.
+    """
+    try:
+        reply_data = ai_classifier.generate_smart_response(
+            comment_text=payload.comment_text,
+            context=payload.user_type,
+            user_type=payload.user_type
+        )
+        return reply_data
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error generando respuesta con IA: {str(e)}"
+        )
+
+class BotDetectRequest(BaseModel):
+    comment_text: str = Field(..., description="Texto del comentario")
+    author_metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
+
+@router.post("/detect-bot")
+def detect_bot_endpoint(payload: BotDetectRequest):
+    """
+    Evalúa perfil y texto para detectar si es un bot, ratio seguidores/seguidos,
+    antigüedad de cuenta, probabilidad de bot e identifica el origen.
+    """
+    try:
+        bot_data = ai_classifier.detect_bot(
+            comment_text=payload.comment_text,
+            author_metadata=payload.author_metadata
+        )
+        return bot_data
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error analizando detección de bot: {str(e)}"
+        )

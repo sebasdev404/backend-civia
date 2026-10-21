@@ -4,8 +4,10 @@ distribuidos en las 10 comunas de Neiva y corregimientos.
 """
 import random
 from datetime import datetime, timedelta
-from app.core.database import SessionLocal
+from app.core.database import SessionLocal, engine, Base
 from app.models.incident import Incident
+
+Base.metadata.create_all(bind=engine)
 
 COMUNAS_DATA = {
     'comuna-1': {

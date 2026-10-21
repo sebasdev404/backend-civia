@@ -439,3 +439,13 @@ def seed_database(db: Session = Depends(get_db)):
         "details": result
     }
 
+if __name__ == "__main__":
+    from app.core.database import SessionLocal, engine, Base
+    Base.metadata.create_all(bind=engine)
+    db = SessionLocal()
+    try:
+        res = run_seed(db)
+        print("SEED COMPLETADO:", res)
+    finally:
+        db.close()
+

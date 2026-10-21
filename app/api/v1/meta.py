@@ -226,14 +226,18 @@ def get_monitored_posts(
     # 1. Intentar consultar desde la base de datos PostgreSQL (MetaPost)
     query = db.query(MetaPost)
 
-    if month and month != "all":
-        query = query.filter(MetaPost.month_key == month)
+    actual_month = month if isinstance(month, str) else None
+    actual_search = search.strip() if isinstance(search, str) and search.strip() else None
+    actual_limit = limit if isinstance(limit, int) else 250
 
-    if search and search.strip():
-        term = f"%{search.strip()}%"
+    if actual_month and actual_month != "all":
+        query = query.filter(MetaPost.month_key == actual_month)
+
+    if actual_search:
+        term = f"%{actual_search}%"
         query = query.filter((MetaPost.title.ilike(term)) | (MetaPost.message.ilike(term)))
 
-    db_posts = query.order_by(desc(MetaPost.created_time)).limit(limit).all()
+    db_posts = query.order_by(desc(MetaPost.created_time)).limit(actual_limit).all()
 
     if db_posts:
         all_cases = db.query(Case).all()
