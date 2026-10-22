@@ -18,6 +18,7 @@ class MetaPost(Base):
     likes_count = Column(Integer, default=0)
     views_count = Column(Integer, default=0)
     shares_count = Column(Integer, default=0)
+    source = Column(String(50), default="Facebook")
     raw_comments_json = Column(Text, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
