@@ -436,35 +436,13 @@ def sync_instagram_publications(db) -> int:
     return len(ig_posts_data)
 
 def generate_fallback_covers():
-    """Crea imágenes banner elegantes para los posts que no tengan archivo físico aún."""
-    from PIL import Image, ImageDraw, ImageFont
-
-    covers_to_generate = [
-        ("ig_cover_comuna6.jpg", "COMUNA 6: EL LIMONAR Y TIMANCO", "Recorrido Comunitario Malla Vial", (16, 80, 160)),
-        ("ig_cover_malecon.jpg", "MALECÓN DEL RÍO MAGDALENA", "Foco de Inseguridad y Luminarias", (180, 40, 40)),
-        ("ig_cover_ceibas.jpg", "RÍO LAS CEIBAS Y LA TOMA", "Crisis Ambiental y Residuos", (20, 120, 80)),
-        ("ig_cover_salud.jpg", "RED DE SALUD PÚBLICA NEIVA", "ESE Carmen Emilia Ospina y Hospital", (140, 40, 140)),
-        ("default_cover.jpg", "JOHAN STEED - NEIVA 2026", "CIVIA Inteligencia Ciudadana", (30, 41, 59)),
-    ]
-
-    for filename, title, subtitle, bg_color in covers_to_generate:
-        filepath = os.path.join("static", "covers", filename)
-        if not os.path.exists(filepath):
-            img = Image.new("RGB", (800, 500), color=bg_color)
-            draw = ImageDraw.Draw(img)
-
-            # Gradiente simple y marco
-            draw.rectangle([(20, 20), (780, 480)], outline=(255, 255, 255, 120), width=3)
-            draw.rectangle([(24, 24), (776, 70)], fill=(0, 0, 0, 100))
-
-            # Texto
-            draw.text((40, 36), "CIVIA • ALCALDÍA DE NEIVA • META GRAPH API", fill=(220, 230, 255))
-            draw.text((40, 200), title, fill=(255, 255, 255))
-            draw.text((40, 260), subtitle, fill=(200, 225, 255))
-            draw.text((40, 420), "Canal Oficial de Escucha: Facebook & Instagram (@johansteed_)", fill=(180, 200, 240))
-
-            img.save(filepath, "JPEG", quality=90)
-            print(f"Caratula generada: {filepath}", flush=True)
+    """Genera portadas fotográficas profesionales para publicaciones."""
+    try:
+        from update_covers import THEMES, process_cover
+        for theme in THEMES:
+            process_cover(theme)
+    except Exception as e:
+        print(f"Error generando portadas temáticas: {e}", flush=True)
 
 def run_full_sync():
     print("==================================================", flush=True)
