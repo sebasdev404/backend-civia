@@ -185,7 +185,7 @@ def list_citizens(
     followers_filter: Optional[str] = Query("all", description="all, under_50, 50_500, over_500"),
     account_age_filter: Optional[str] = Query("all", description="all, recent, older"),
     search: Optional[str] = Query(None, description="Buscar por nombre, teléfono, barrio o handle"),
-    limit: int = 50,
+    limit: int = 200,
     offset: int = 0,
     db: Session = Depends(get_db)
 ):

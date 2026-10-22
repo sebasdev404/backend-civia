@@ -217,7 +217,7 @@ def get_ai_credits_info(db: Session = Depends(get_db)):
         "billing_url": "https://platform.openai.com/settings/organization/billing/overview",
         "detail": (
             f"Saldo real en OpenAI: ${remaining_usd:.2f} USD de ${initial_budget:.2f} USD asignados. "
-            f"Consumo real acumulado: ${consumed_usd:.2f} USD ({percent_consumed}%)."
+            f"Consumo real registrado: ${consumed_usd:.4f} USD ({percent_consumed}%) analizando {cases_analyzed:,} comentarios ciudadanos."
         )
     }
 
