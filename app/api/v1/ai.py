@@ -180,27 +180,21 @@ def get_ai_credits_info(db: Session = Depends(get_db)):
         status_msg = "Error de Red"
         quota_status = f"No se pudo conectar a OpenAI: {str(e)}"
 
-    # 3. Calcular saldo disponible y saldo consumido
-    initial_budget = float(getattr(settings, "OPENAI_INITIAL_BUDGET", 10.00)) # Fondo inicial asignado al proyecto OpenAI
-    consumed_usd = round(estimated_cost_usd, 4)
+    # 3. Saldo Real Confirmado de OpenAI
+    initial_budget = float(getattr(settings, "OPENAI_INITIAL_BUDGET", 10.00))
+    real_balance = getattr(settings, "OPENAI_REAL_BALANCE", None)
+    real_consumed = getattr(settings, "OPENAI_CONSUMED_USD", None)
 
-    # Intentar consultar balance si se cuenta con llave de organización o admin
-    admin_key = os.getenv("OPENAI_ADMIN_KEY") or api_key
-    try:
-        req_bal = urllib.request.Request(
-            "https://api.openai.com/v1/organization/billing/credit_balance",
-            headers={"Authorization": f"Bearer {admin_key}"}
-        )
-        with urllib.request.urlopen(req_bal, timeout=3) as resp_bal:
-            bal_data = json.loads(resp_bal.read().decode())
-            if "total_available" in bal_data:
-                balance_amount = float(bal_data.get("total_available"))
-            elif "balance" in bal_data:
-                balance_amount = float(bal_data.get("balance"))
-    except Exception:
-        pass
+    if real_balance is not None:
+        remaining_usd = round(float(real_balance), 2)
+        consumed_usd = round(max(0.0, initial_budget - remaining_usd), 4)
+    elif real_consumed is not None:
+        consumed_usd = round(float(real_consumed), 4)
+        remaining_usd = round(max(0.0, initial_budget - consumed_usd), 2)
+    else:
+        consumed_usd = 0.0
+        remaining_usd = round(initial_budget, 2)
 
-    remaining_usd = round(balance_amount if balance_amount is not None else max(0.0, initial_budget - consumed_usd), 4)
     percent_consumed = round((consumed_usd / initial_budget) * 100, 1) if initial_budget > 0 else 0.0
     percent_remaining = round(max(0.0, 100.0 - percent_consumed), 1)
 
@@ -210,8 +204,7 @@ def get_ai_credits_info(db: Session = Depends(get_db)):
         "quota_status": quota_status,
         "latency_ms": latency_ms,
         "cases_analyzed": cases_analyzed,
-        "estimated_tokens": estimated_tokens,
-        "estimated_cost_usd": f"{consumed_usd:.4f}",
+        "tokens_processed": estimated_tokens,
         "consumed_usd": consumed_usd,
         "remaining_usd": remaining_usd,
         "initial_budget_usd": initial_budget,
@@ -223,9 +216,73 @@ def get_ai_credits_info(db: Session = Depends(get_db)):
         "currency": currency,
         "billing_url": "https://platform.openai.com/settings/organization/billing/overview",
         "detail": (
-            f"Saldo disponible en OpenAI: ${remaining_usd:.2f} USD de ${initial_budget:.2f} USD asignados. "
-            f"Se han consumido ${consumed_usd:.4f} USD ({percent_consumed}%) analizando {cases_analyzed:,} comentarios ciudadanos."
+            f"Saldo real en OpenAI: ${remaining_usd:.2f} USD de ${initial_budget:.2f} USD asignados. "
+            f"Consumo real acumulado: ${consumed_usd:.2f} USD ({percent_consumed}%)."
         )
+    }
+
+
+class BalanceSyncRequest(BaseModel):
+    initial_budget: Optional[float] = None
+    real_balance: Optional[float] = None
+    consumed_usd: Optional[float] = None
+
+@router.post("/sync-balance")
+def sync_ai_balance(payload: BalanceSyncRequest):
+    """
+    Sincroniza y persiste el saldo real y presupuesto del proyecto OpenAI.
+    """
+    from app.core.config import settings, _ENV_PATH
+    import re
+
+    if payload.initial_budget is not None:
+        settings.OPENAI_INITIAL_BUDGET = float(payload.initial_budget)
+    if payload.real_balance is not None:
+        settings.OPENAI_REAL_BALANCE = float(payload.real_balance)
+        settings.OPENAI_CONSUMED_USD = round(max(0.0, settings.OPENAI_INITIAL_BUDGET - settings.OPENAI_REAL_BALANCE), 4)
+    elif payload.consumed_usd is not None:
+        settings.OPENAI_CONSUMED_USD = float(payload.consumed_usd)
+        settings.OPENAI_REAL_BALANCE = round(max(0.0, settings.OPENAI_INITIAL_BUDGET - settings.OPENAI_CONSUMED_USD), 2)
+
+    # Persistir en .env
+    try:
+        if os.path.exists(_ENV_PATH):
+            with open(_ENV_PATH, 'r', encoding='utf-8') as ef:
+                lines = ef.readlines()
+            
+            new_lines = []
+            keys_updated = set()
+            for line in lines:
+                if line.startswith("OPENAI_INITIAL_BUDGET="):
+                    new_lines.append(f"OPENAI_INITIAL_BUDGET={settings.OPENAI_INITIAL_BUDGET:.2f}\n")
+                    keys_updated.add("OPENAI_INITIAL_BUDGET")
+                elif line.startswith("OPENAI_REAL_BALANCE="):
+                    new_lines.append(f"OPENAI_REAL_BALANCE={settings.OPENAI_REAL_BALANCE:.2f}\n")
+                    keys_updated.add("OPENAI_REAL_BALANCE")
+                elif line.startswith("OPENAI_CONSUMED_USD="):
+                    new_lines.append(f"OPENAI_CONSUMED_USD={settings.OPENAI_CONSUMED_USD:.4f}\n")
+                    keys_updated.add("OPENAI_CONSUMED_USD")
+                else:
+                    new_lines.append(line)
+            
+            if "OPENAI_INITIAL_BUDGET" not in keys_updated:
+                new_lines.append(f"OPENAI_INITIAL_BUDGET={settings.OPENAI_INITIAL_BUDGET:.2f}\n")
+            if "OPENAI_REAL_BALANCE" not in keys_updated:
+                new_lines.append(f"OPENAI_REAL_BALANCE={settings.OPENAI_REAL_BALANCE:.2f}\n")
+            if "OPENAI_CONSUMED_USD" not in keys_updated:
+                new_lines.append(f"OPENAI_CONSUMED_USD={settings.OPENAI_CONSUMED_USD:.4f}\n")
+
+            with open(_ENV_PATH, 'w', encoding='utf-8') as ef:
+                ef.writelines(new_lines)
+    except Exception as e:
+        print(f"No se pudo guardar en .env: {e}")
+
+    return {
+        "success": True,
+        "initial_budget_usd": settings.OPENAI_INITIAL_BUDGET,
+        "remaining_usd": settings.OPENAI_REAL_BALANCE,
+        "consumed_usd": settings.OPENAI_CONSUMED_USD,
+        "message": f"Saldo real actualizado a ${settings.OPENAI_REAL_BALANCE:.2f} USD de ${settings.OPENAI_INITIAL_BUDGET:.2f} USD."
     }
 
 
