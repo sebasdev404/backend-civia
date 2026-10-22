@@ -72,7 +72,8 @@ def download_and_cache_cover(post_id: str, remote_url: str) -> str:
         except Exception as e:
             print(f"No se pudo descargar portada para {post_id}: {e}", flush=True)
 
-    return public_url if os.path.exists(local_path) else (remote_url or "")
+    default_fallback = "http://localhost:8000/static/covers/default_cover.jpg"
+    return public_url if os.path.exists(local_path) else default_fallback
 
 def is_meaningful_comment(text_val: str) -> bool:
     if not text_val:
