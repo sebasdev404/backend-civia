@@ -22,6 +22,7 @@ class Settings(BaseSettings):
 
     # Configuración de Inteligencia Artificial (OpenAI)
     OPENAI_API_KEY: Optional[str] = None
+    OPENAI_INITIAL_BUDGET: float = 10.00
 
     # Configuración de Integración con Meta (Facebook & Instagram)
     META_APP_ID: Optional[str] = None

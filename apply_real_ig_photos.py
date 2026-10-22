@@ -26,3 +26,4 @@ for dest_name, src_name in mappings.items():
         print(f"Source not found: {src_path}")
 
 print("Instagram covers successfully replaced with REAL Johan Steed photos!")
+

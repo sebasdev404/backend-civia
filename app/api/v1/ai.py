@@ -181,7 +181,7 @@ def get_ai_credits_info(db: Session = Depends(get_db)):
         quota_status = f"No se pudo conectar a OpenAI: {str(e)}"
 
     # 3. Calcular saldo disponible y saldo consumido
-    initial_budget = float(os.getenv("OPENAI_INITIAL_BUDGET", "5.00")) # Fondo inicial del proyecto OpenAI
+    initial_budget = float(getattr(settings, "OPENAI_INITIAL_BUDGET", 10.00)) # Fondo inicial asignado al proyecto OpenAI
     consumed_usd = round(estimated_cost_usd, 4)
 
     # Intentar consultar balance si se cuenta con llave de organización o admin
