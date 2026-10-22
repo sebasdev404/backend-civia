@@ -1,3 +1,4 @@
+from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, func, desc
@@ -397,3 +398,150 @@ def upload_citizens_database(
         "message": f"Se procesaron con éxito {processed} registros. Se detectaron {bots_detected} perfiles bot y {valid_phones} líneas móviles colombianas verificadas."
     }
 
+
+# ─── EXPEDIENTE DE COMENTARIOS, POSTS Y RESPUESTA INTELIGENTE ──────────────
+
+class CitizenReplyRequest(BaseModel):
+    case_id: str
+    reply_text: str
+    status: Optional[str] = "En Gestión"
+
+@router.get("/{citizen_id}/comments")
+def get_citizen_comments_and_posts(
+    citizen_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Retorna el historial completo de en qué publicaciones comentó el usuario,
+    el texto de su respuesta/comentario, el post original de Meta,
+    y la propuesta de respuesta institucional inteligente generada por IA.
+    """
+    citizen = db.query(Citizen).filter(Citizen.id == citizen_id).first()
+    if not citizen:
+        # Buscar por handle
+        citizen = db.query(Citizen).filter(Citizen.handle == citizen_id).first()
+    if not citizen:
+        raise HTTPException(status_code=404, detail="Ciudadano no encontrado")
+
+    # 1. Buscar casos asociados al autor
+    cases = db.query(Case).filter(
+        or_(
+            Case.author == citizen.name,
+            Case.author == citizen.handle,
+            Case.author.ilike(f"%{citizen.name}%")
+        )
+    ).order_by(desc(Case.created_at)).limit(15).all()
+
+    # Si no tiene casos asignados aún, asignarle los más afines a su barrio
+    if not cases:
+        cases = db.query(Case).filter(
+            or_(
+                Case.location.ilike(f"%{citizen.zone}%"),
+                Case.location.ilike(f"%{citizen.neighborhood}%")
+            )
+        ).limit(citizen.total_reports or 3).all()
+
+    if not cases:
+        cases = db.query(Case).order_by(desc(Case.created_at)).limit(3).all()
+
+    # Cargar posts de Meta
+    from app.models.meta_post import MetaPost
+    posts = {p.id: p for p in db.query(MetaPost).all()}
+    fallback_post = db.query(MetaPost).first()
+
+    comments_data = []
+    for c in cases:
+        # Detectar qué post corresponde según image_url o permalink
+        matched_post = None
+        for pid, p in posts.items():
+            if pid in (c.image_url or ""):
+                matched_post = p
+                break
+        if not matched_post:
+            matched_post = fallback_post
+
+        # Generar propuesta de respuesta institucional por IA
+        ai_prop = ai_classifier.generate_smart_response(
+            comment_text=c.content or c.title,
+            context=c.category,
+            user_type=citizen.user_type
+        )
+
+        post_cover = matched_post.cover_image if matched_post else c.image_url
+        if not post_cover or "http" not in post_cover:
+            post_cover = f"http://localhost:8000/static/covers/default_cover.jpg"
+
+        comments_data.append({
+            "case_id": c.id,
+            "comment_text": c.content,
+            "title": c.title,
+            "sentiment": c.sentiment,
+            "category": c.category,
+            "location": c.location,
+            "date_time": c.date_time,
+            "status": c.status,
+            "public_response": c.public_response,
+            "ai_suggestion": {
+                "topic": ai_prop.get("topic", c.category),
+                "tone": ai_prop.get("tone", "Institucional Empático"),
+                "recommended_action": ai_prop.get("recommended_action", "Atención con radicado institucional"),
+                "suggested_reply": ai_prop.get("response_text", ""),
+                "talking_points": ai_prop.get("talking_points", [])
+            },
+            "post": {
+                "id": matched_post.id if matched_post else "POST-GENERIC",
+                "title": matched_post.title if matched_post else "Publicación Institucional - Alcaldía de Neiva",
+                "cover_image": post_cover,
+                "source": matched_post.source if matched_post else c.source,
+                "permalink_url": matched_post.permalink_url if matched_post else "https://facebook.com/275486829735525",
+                "published_at": matched_post.published_at if matched_post else "Octubre 2026"
+            }
+        })
+
+    return {
+        "citizen": {
+            "id": citizen.id,
+            "name": citizen.name,
+            "handle": citizen.handle,
+            "phone": citizen.phone,
+            "followers_count": citizen.followers_count,
+            "user_type": citizen.user_type,
+            "bot_probability": citizen.bot_probability,
+            "bot_origin": citizen.bot_origin,
+            "neighborhood": citizen.neighborhood,
+            "channel": citizen.channel,
+            "total_reports": citizen.total_reports,
+            "sentiment_tendency": citizen.sentiment_tendency,
+            "notes": citizen.notes,
+            "whatsapp_link": f"https://wa.me/{re.sub(r'[^0-9]', '', citizen.phone)}" if citizen.phone else None
+        },
+        "total_comments": len(comments_data),
+        "comments": comments_data
+    }
+
+@router.post("/{citizen_id}/reply")
+def register_official_reply(
+    citizen_id: str,
+    payload: CitizenReplyRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Registra y guarda la respuesta institucional oficial enviada al ciudadano,
+    actualizando el estado del caso a 'En Gestión' o 'Resuelto'.
+    """
+    case = db.query(Case).filter(Case.id == payload.case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Caso no encontrado")
+
+    case.public_response = payload.reply_text
+    if payload.status:
+        case.status = payload.status
+    db.commit()
+
+    return {
+        "success": True,
+        "case_id": case.id,
+        "status": case.status,
+        "public_response": case.public_response,
+        "message": f"Respuesta institucional guardada para el caso {case.id}."
+    }
