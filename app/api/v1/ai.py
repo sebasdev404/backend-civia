@@ -180,7 +180,11 @@ def get_ai_credits_info(db: Session = Depends(get_db)):
         status_msg = "Error de Red"
         quota_status = f"No se pudo conectar a OpenAI: {str(e)}"
 
-    # 3. Intentar consultar balance si se cuenta con llave de organización o admin
+    # 3. Calcular saldo disponible y saldo consumido
+    initial_budget = float(os.getenv("OPENAI_INITIAL_BUDGET", "5.00")) # Fondo inicial del proyecto OpenAI
+    consumed_usd = round(estimated_cost_usd, 4)
+
+    # Intentar consultar balance si se cuenta con llave de organización o admin
     admin_key = os.getenv("OPENAI_ADMIN_KEY") or api_key
     try:
         req_bal = urllib.request.Request(
@@ -190,11 +194,15 @@ def get_ai_credits_info(db: Session = Depends(get_db)):
         with urllib.request.urlopen(req_bal, timeout=3) as resp_bal:
             bal_data = json.loads(resp_bal.read().decode())
             if "total_available" in bal_data:
-                balance_amount = bal_data.get("total_available")
+                balance_amount = float(bal_data.get("total_available"))
             elif "balance" in bal_data:
-                balance_amount = bal_data.get("balance")
+                balance_amount = float(bal_data.get("balance"))
     except Exception:
         pass
+
+    remaining_usd = round(balance_amount if balance_amount is not None else max(0.0, initial_budget - consumed_usd), 4)
+    percent_consumed = round((consumed_usd / initial_budget) * 100, 1) if initial_budget > 0 else 0.0
+    percent_remaining = round(max(0.0, 100.0 - percent_consumed), 1)
 
     return {
         "status": status_msg,
@@ -203,15 +211,20 @@ def get_ai_credits_info(db: Session = Depends(get_db)):
         "latency_ms": latency_ms,
         "cases_analyzed": cases_analyzed,
         "estimated_tokens": estimated_tokens,
-        "estimated_cost_usd": estimated_cost_usd,
+        "estimated_cost_usd": f"{consumed_usd:.4f}",
+        "consumed_usd": consumed_usd,
+        "remaining_usd": remaining_usd,
+        "initial_budget_usd": initial_budget,
+        "percent_consumed": percent_consumed,
+        "percent_remaining": percent_remaining,
         "model": "OpenAI GPT-4o-mini",
         "masked_key": masked_key,
-        "balance_amount": balance_amount,
+        "balance_amount": remaining_usd,
         "currency": currency,
         "billing_url": "https://platform.openai.com/settings/organization/billing/overview",
         "detail": (
-            f"La llave de inferencia responde en {latency_ms} ms. "
-            f"Se han analizado {cases_analyzed:,} incidentes territoriales en Neiva con una inversión acumulada estimada de ${estimated_cost_usd} USD."
+            f"Saldo disponible en OpenAI: ${remaining_usd:.2f} USD de ${initial_budget:.2f} USD asignados. "
+            f"Se han consumido ${consumed_usd:.4f} USD ({percent_consumed}%) analizando {cases_analyzed:,} comentarios ciudadanos."
         )
     }
 
