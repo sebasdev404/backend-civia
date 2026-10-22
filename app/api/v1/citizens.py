@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import or_, func, desc
+from sqlalchemy import or_, func, desc, case
 from typing import List, Optional, Dict, Any
 import uuid
 import re
@@ -253,7 +253,12 @@ def list_citizens(
         )
 
     total_matched = query.count()
-    citizens = query.order_by(desc(Citizen.bot_probability), desc(Citizen.total_reports)).offset(offset).limit(limit).all()
+    # Ordenar: primero ciudadanos reales de Neiva (por reportes y seguidores), perfiles bot al final
+    citizens = query.order_by(
+        case((Citizen.user_type == 'Bot', 1), else_=0),
+        desc(Citizen.total_reports),
+        desc(Citizen.followers_count)
+    ).offset(offset).limit(limit).all()
 
     # Conteos globales para métricas superiores
     all_citizens = db.query(Citizen).all()
