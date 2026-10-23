@@ -72,8 +72,8 @@ INITIAL_MOCK_CITIZENS = [
     },
     {
         "id": "CIUD-003",
-        "name": "Usuario_9281734_Neiva",
-        "handle": "@user9281734",
+        "name": "Julián Rodríguez",
+        "handle": "@julian.rodriguez.opita",
         "phone": None,
         "followers_count": 4,
         "following_count": 412,
@@ -108,8 +108,8 @@ INITIAL_MOCK_CITIZENS = [
     },
     {
         "id": "CIUD-005",
-        "name": "Alerta_Opita_Real",
-        "handle": "@alertaopita2026",
+        "name": "Alerta Opita Noticias",
+        "handle": "@alerta.opita.neiva",
         "phone": None,
         "followers_count": 12,
         "following_count": 890,
@@ -162,8 +162,8 @@ INITIAL_MOCK_CITIZENS = [
     },
     {
         "id": "CIUD-008",
-        "name": "Bot_Hater_Huila_44",
-        "handle": "@bot_huila44",
+        "name": "Veedor Ciudadano Huila",
+        "handle": "@veedor.ciudadano.huila",
         "phone": None,
         "followers_count": 2,
         "following_count": 640,
