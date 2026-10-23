@@ -437,17 +437,7 @@ def get_citizen_comments_and_posts(
         )
     ).order_by(desc(Case.created_at)).limit(15).all()
 
-    # Si no tiene casos asignados aún, asignarle los más afines a su barrio
-    if not cases:
-        cases = db.query(Case).filter(
-            or_(
-                Case.location.ilike(f"%{citizen.zone}%"),
-                Case.location.ilike(f"%{citizen.neighborhood}%")
-            )
-        ).limit(citizen.total_reports or 3).all()
-
-    if not cases:
-        cases = db.query(Case).order_by(desc(Case.created_at)).limit(3).all()
+    # Solo comentarios legítimos pertenecientes a este autor
 
     # Cargar posts de Meta
     from app.models.meta_post import MetaPost
@@ -478,6 +468,7 @@ def get_citizen_comments_and_posts(
 
         comments_data.append({
             "case_id": c.id,
+            "author": c.author,
             "comment_text": c.content,
             "title": c.title,
             "sentiment": c.sentiment,
