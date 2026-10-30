@@ -194,7 +194,7 @@ def sync_facebook_live_posts(db) -> int:
                     except Exception:
                         ai_res = {
                             "category": "Atención Ciudadana",
-                            "sentiment": "Crítico",
+                            "sentiment": "Enojo o ira: Frustración",
                             "priority_suggestion": "Media",
                             "commune": "Comuna General",
                             "neighborhood": "Neiva",
@@ -210,7 +210,7 @@ def sync_facebook_live_posts(db) -> int:
                         title=f"{ai_res.get('category', 'Solicitud')}: {ai_res.get('detected_problem', c_text[:60])}",
                         content=c_text,
                         category=ai_res.get("category", "General"),
-                        sentiment=ai_res.get("sentiment", "Crítico"),
+                        sentiment=ai_res.get("sentiment", "Enojo o ira: Frustración"),
                         priority=ai_res.get("priority_suggestion", "Media"),
                         status="Pendiente",
                         location=f"{ai_res.get('neighborhood', 'Neiva')} ({ai_res.get('commune', 'Comuna General')})",
@@ -412,7 +412,7 @@ def sync_instagram_publications(db) -> int:
                     title=f"{comm['category']}: {comm['content'][:60]}",
                     content=comm["content"],
                     category=comm["category"],
-                    sentiment="Indignación",
+                    sentiment="Enojo o ira: Frustración",
                     priority=comm["priority"],
                     status="Pendiente",
                     location=f"{comm['neighborhood']} ({comm['commune']})",
