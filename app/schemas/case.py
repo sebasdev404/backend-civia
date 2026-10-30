@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict
-from typing import Optional, Union
+from typing import Optional, Union, Dict, Any
 from datetime import datetime
 
 class CaseBase(BaseModel):
@@ -68,10 +68,22 @@ class CaseResolve(BaseModel):
 class CasePublicResponse(BaseModel):
     public_response: str
 
+class MetaPostSummary(BaseModel):
+    id: str
+    title: str
+    message: Optional[str] = None
+    cover_image: Optional[str] = None
+    media_type: Optional[str] = "image"
+    permalink_url: Optional[str] = None
+    published_at: Optional[str] = None
+    source: Optional[str] = "Facebook"
+    total_comments: Optional[int] = 0
+    likes_count: Optional[int] = 0
+
 class CaseResponse(CaseBase):
     id: str
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    post_data: Optional[MetaPostSummary] = None
 
     model_config = ConfigDict(from_attributes=True)
-

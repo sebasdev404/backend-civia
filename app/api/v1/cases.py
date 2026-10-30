@@ -7,6 +7,8 @@ from datetime import datetime
 from app.core.database import get_db
 from app.models.case import Case
 from app.models.incident import Incident
+from app.models.meta_post import MetaPost
+import re
 from app.schemas.case import (
     CaseCreate,
     CaseUpdate,
@@ -15,6 +17,7 @@ from app.schemas.case import (
     CaseNoteCreate,
     CaseResolve,
     CasePublicResponse,
+    MetaPostSummary,
 )
 
 router = APIRouter(prefix="/cases", tags=["Casos Ciudadanos"])
@@ -127,7 +130,35 @@ def get_cases(
 
 @router.get("/{case_id}", response_model=CaseResponse)
 def get_case_by_id(case_id: str, db: Session = Depends(get_db)):
-    return find_case_or_fallback(case_id, db)
+    case_item = find_case_or_fallback(case_id, db)
+    response_obj = CaseResponse.model_validate(case_item)
+    
+    # Enriquecer con información real del Post de Johan Steed
+    post = None
+    notes = case_item.internal_notes or ""
+    pid_match = re.search(r'\[Post ID\]:\s*([^\s\n]+)', notes)
+    if pid_match:
+        pid = pid_match.group(1).strip()
+        post = db.query(MetaPost).filter(MetaPost.id == pid).first()
+    
+    if not post:
+        # Si no tiene Post ID exacto, buscar post relevante de la misma red o el más reciente
+        post = db.query(MetaPost).filter(MetaPost.source == case_item.source).first() or db.query(MetaPost).first()
+        
+    if post:
+        response_obj.post_data = MetaPostSummary(
+            id=post.id,
+            title=post.title,
+            message=post.message or post.title,
+            cover_image=post.cover_image or case_item.image_url,
+            media_type=post.media_type or "image",
+            permalink_url=post.permalink_url or ("https://facebook.com/1627414346066648" if "face" in (case_item.source or "").lower() else "https://instagram.com/johansteed_"),
+            published_at=post.published_at or case_item.date_time,
+            source=post.source or case_item.source,
+            total_comments=post.total_comments or 1,
+            likes_count=post.likes_count or 0,
+        )
+    return response_obj
 
 @router.post("", response_model=CaseResponse, status_code=status.HTTP_201_CREATED)
 def create_case(case_in: CaseCreate, db: Session = Depends(get_db)):
@@ -239,7 +270,8 @@ def toggle_priority_action(case_id: str, db: Session = Depends(get_db)):
     return case_item
 
 @router.post("/{case_id}/public-response", response_model=CaseResponse)
-def set_public_response(case_id: str, payload: CasePublicResponse, db: Session = Depends(get_db)):
+def set_public_response(case_id: str, payload: CasePublicResponse,
+    MetaPostSummary, db: Session = Depends(get_db)):
     """Guarda la respuesta institucional oficial redactada para redes sociales."""
     case_item = find_case_or_fallback(case_id, db)
     case_item.public_response = payload.public_response
