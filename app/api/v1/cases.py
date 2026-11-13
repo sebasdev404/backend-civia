@@ -1,13 +1,15 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, desc
-from typing import List, Optional
+from typing import List, Optional, Union, Dict, Any
 from datetime import datetime
 
 from app.core.database import get_db
 from app.models.case import Case
 from app.models.incident import Incident
 from app.models.meta_post import MetaPost
+from app.services.case_reads import list_case_summaries
+from app.services.post_images import post_image_urls, real_image_url
 import re
 from app.schemas.case import (
     CaseCreate,
@@ -79,18 +81,14 @@ def find_case_or_fallback(case_id: str, db: Session) -> Case:
         db.refresh(new_case)
         return new_case
 
-    # 5. Fallback al primer caso existente para garantizar 0 pantallas en blanco
-    first_case = db.query(Case).first()
-    if first_case:
-        return first_case
-
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
         detail=f"Caso con id '{case_id}' no encontrado",
     )
 
-@router.get("", response_model=List[CaseResponse])
+@router.get("", response_model=Union[List[CaseResponse], Dict[str, Any]])
 def get_cases(
+    request: Request,
     search: Optional[str] = Query(None, description="Búsqueda por texto en título, contenido o barrio"),
     priority: Optional[str] = Query(None, description="Filtrar por prioridad: Alta, Media, Baja"),
     category: Optional[str] = Query(None, description="Filtrar por categoría de problemática"),
@@ -98,8 +96,15 @@ def get_cases(
     status: Optional[str] = Query(None, description="Filtrar por estado: Pendiente, En Gestión, Resuelto"),
     skip: int = Query(0, ge=0),
     limit: int = Query(500, ge=1, le=1000),
+    paginated: bool = Query(False),
+    department: Optional[str] = Query(None),
+    priority_only: bool = Query(False),
     db: Session = Depends(get_db),
 ):
+    if paginated:
+        return list_case_summaries(db, search=search, priority=priority, category=category,
+            source=source, status=status, department=department, priority_only=priority_only,
+            limit=min(limit, 100), offset=skip, asset_base=str(request.base_url).rstrip("/"))
     query = db.query(Case)
 
     if priority and priority != "all":
@@ -126,10 +131,15 @@ def get_cases(
             )
         )
 
-    return query.order_by(desc(Case.created_at)).offset(skip).limit(limit).all()
+    cases = query.order_by(desc(Case.created_at), desc(Case.id)).offset(skip).limit(limit).all()
+    # Backward-compatible array for other screens, without generic stock images.
+    results = [CaseResponse.model_validate(item) for item in cases]
+    for item in results:
+        item.image_url = real_image_url(item.image_url)
+    return results
 
 @router.get("/{case_id}", response_model=CaseResponse)
-def get_case_by_id(case_id: str, db: Session = Depends(get_db)):
+def get_case_by_id(case_id: str, request: Request, db: Session = Depends(get_db)):
     case_item = find_case_or_fallback(case_id, db)
     response_obj = CaseResponse.model_validate(case_item)
     
@@ -141,23 +151,34 @@ def get_case_by_id(case_id: str, db: Session = Depends(get_db)):
         pid = pid_match.group(1).strip()
         post = db.query(MetaPost).filter(MetaPost.id == pid).first()
     
-    if not post:
-        # Si no tiene Post ID exacto, buscar post relevante de la misma red o el más reciente
-        post = db.query(MetaPost).filter(MetaPost.source == case_item.source).first() or db.query(MetaPost).first()
-        
+    pid = pid_match.group(1).strip() if pid_match else None
+    candidate = post.cover_image if post else case_item.image_url
+    if pid and not post and not (candidate or "").split("?", 1)[0].endswith(f"/{pid}.jpg"):
+        candidate = None
+    cover, _ = post_image_urls(pid, candidate, str(request.base_url).rstrip("/"))
+    response_obj.image_url = cover
     if post:
+        p_url = post.permalink_url
         response_obj.post_data = MetaPostSummary(
             id=post.id,
             title=post.title,
             message=post.message or post.title,
-            cover_image=post.cover_image or case_item.image_url,
+            cover_image=cover,
             media_type=post.media_type or "image",
-            permalink_url=post.permalink_url or ("https://facebook.com/1627414346066648" if "face" in (case_item.source or "").lower() else "https://instagram.com/johansteed_"),
+            permalink_url=p_url,
             published_at=post.published_at or case_item.date_time,
             source=post.source or case_item.source,
-            total_comments=post.total_comments or 1,
+            total_comments=post.total_comments or 0,
             likes_count=post.likes_count or 0,
         )
+        cid_match = re.search(r'\[Comment ID\]:\s*([^\s\r\n]+)', notes)
+        if cid_match and p_url:
+            cid = cid_match.group(1).strip()
+            raw_cid = cid.split('_')[-1]
+            sep = '&' if '?' in p_url else '?'
+            response_obj.comment_url = f"{p_url}{sep}comment_id={raw_cid}"
+        else:
+            response_obj.comment_url = p_url
     return response_obj
 
 @router.post("", response_model=CaseResponse, status_code=status.HTTP_201_CREATED)
@@ -270,8 +291,7 @@ def toggle_priority_action(case_id: str, db: Session = Depends(get_db)):
     return case_item
 
 @router.post("/{case_id}/public-response", response_model=CaseResponse)
-def set_public_response(case_id: str, payload: CasePublicResponse,
-    MetaPostSummary, db: Session = Depends(get_db)):
+def set_public_response(case_id: str, payload: CasePublicResponse, db: Session = Depends(get_db)):
     """Guarda la respuesta institucional oficial redactada para redes sociales."""
     case_item = find_case_or_fallback(case_id, db)
     case_item.public_response = payload.public_response

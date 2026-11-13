@@ -42,6 +42,7 @@ ENV/
 
 # Logs
 *.log
+static/thumbnails/
 
 # Temporary test images / samples
 esri_sample.png

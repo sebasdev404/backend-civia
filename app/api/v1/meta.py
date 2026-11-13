@@ -1,11 +1,11 @@
 import logging
 import os
+import time
 from fastapi import APIRouter, Request, Response, Query, HTTPException, status, Depends
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from typing import Dict, Any, Optional, List
 import json
-import urllib.request
 from datetime import datetime, timezone, timedelta
 
 from app.core.config import settings
@@ -151,7 +151,7 @@ def simulate_incoming_meta_comment(
 
     return {
         "status": "success",
-        "message": "Comentario simulado y clasificado exitosamente con OpenAI",
+        "message": "Comentario clasificado y procesado exitosamente con OpenAI",
         "case_id": case_id,
         "ai_analysis": ai_analysis
     }
@@ -192,10 +192,27 @@ def get_available_months(db: Session = Depends(get_db)):
         "09": "Septiembre", "10": "Octubre", "11": "Noviembre", "12": "Diciembre"
     }
 
+    months_list = []
+
+    # Calcular rango dinámico desde la DB
+    if month_counts:
+        oldest_key = min(mk for mk, _ in month_counts)
+        newest_key = max(mk for mk, _ in month_counts)
+
+        def key_to_label(mk):
+            parts = mk.split("-")
+            yr = parts[0] if len(parts) > 0 else "2026"
+            mn = parts[1] if len(parts) > 1 else "01"
+            return f"{meses_nombres.get(mn, mn)} {yr}"
+
+        rango_label = f"Todos los meses ({key_to_label(oldest_key)} – {key_to_label(newest_key)})"
+    else:
+        rango_label = "Todas las publicaciones"
+
     months_list = [
         {
             "key": "all",
-            "label": f"Todos los meses (Enero – Octubre 2026)",
+            "label": rango_label,
             "count": total_posts
         }
     ]
@@ -215,189 +232,42 @@ def get_available_months(db: Session = Depends(get_db)):
 
 @router.get("/posts")
 def get_monitored_posts(
+    request: Request,
     month: Optional[str] = Query(None, description="Mes en formato YYYY-MM o 'all'"),
-    search: Optional[str] = Query(None, description="Búsqueda por texto"),
+    search: Optional[str] = Query(None, description="Buscar por texto"),
     network: Optional[str] = Query(None, description="Red social: Facebook, Instagram o all"),
-    limit: int = Query(250, ge=1, le=500),
-    db: Session = Depends(get_db)
+    limit: int = Query(300, ge=1, le=2000),
+    offset: int = Query(0, ge=0),
+    paginated: bool = Query(False),
+    include_details: bool = Query(True, description="Incluir casos y comentarios completos"),
+    cases_only: bool = Query(False, description="Solo publicaciones con casos vinculados"),
+    db: Session = Depends(get_db),
 ):
-    """
-    Obtiene las publicaciones de Facebook/Instagram de Johan Steed con su portada multimedia,
-    titular, fecha y los casos ciudadanos clasificados que pertenecen a cada post.
-    Soporta filtrado por mes (Enero - Octubre 2026) y búsqueda por palabra clave.
-    """
-    # 1. Intentar consultar desde la base de datos PostgreSQL (MetaPost)
-    query = db.query(MetaPost)
+    from app.services.meta_posts import list_posts
+    page = list_posts(
+        db, month=month, search=search, network=network, limit=limit, offset=offset,
+        include_details=include_details, cases_only=cases_only, asset_base=str(request.base_url).rstrip("/"),
+    )
+    return page if paginated else page["items"]
 
-    actual_month = month if isinstance(month, str) else None
-    actual_search = search.strip() if isinstance(search, str) and search.strip() else None
-    actual_limit = limit if isinstance(limit, int) else 250
 
-    if actual_month and actual_month != "all":
-        query = query.filter(MetaPost.month_key == actual_month)
+@router.get("/posts/{post_id}")
+def get_monitored_post(post_id: str, request: Request, db: Session = Depends(get_db)):
+    from app.services.meta_posts import list_posts
+    page = list_posts(db, post_id=post_id, limit=1, include_details=True,
+                      asset_base=str(request.base_url).rstrip("/"))
+    if not page["items"]:
+        raise HTTPException(status_code=404, detail="Publicacion no encontrada")
+    return page["items"][0]
 
-    if actual_search:
-        term = f"%{actual_search}%"
-        query = query.filter((MetaPost.title.ilike(term)) | (MetaPost.message.ilike(term)))
 
-    if network and network != "all":
-        query = query.filter(MetaPost.source.ilike(f"%{network}%"))
-
-    db_posts = query.order_by(desc(MetaPost.created_time)).limit(actual_limit).all()
-
-    if db_posts:
-        all_cases = db.query(Case).all()
-        # Mapear casos por post_id para coincidencia inmediata
-        cases_by_post: Dict[str, List[Dict[str, Any]]] = {}
-        for c in all_cases:
-            p_id = None
-            if c.internal_notes and "[Post ID]:" in c.internal_notes:
-                try:
-                    for line in c.internal_notes.split("\n"):
-                        if line.startswith("[Post ID]:"):
-                            p_id = line.replace("[Post ID]:", "").strip()
-                            break
-                except Exception:
-                    pass
-
-            case_item = {
-                "id": c.id,
-                "author": c.author,
-                "content": c.content,
-                "category": c.category,
-                "sentiment": c.sentiment,
-                "priority": c.priority,
-                "location": c.location,
-                "date_time": c.date_time,
-                "status": c.status,
-                "priority_action": c.priority_action,
-                "assigned_department": c.assigned_department
-            }
-
-            if p_id:
-                if p_id not in cases_by_post:
-                    cases_by_post[p_id] = []
-                cases_by_post[p_id].append(case_item)
-            elif c.image_url:
-                img_key = c.image_url.split("?")[0]
-                if img_key not in cases_by_post:
-                    cases_by_post[img_key] = []
-                cases_by_post[img_key].append(case_item)
-
-        results = []
-        for p in db_posts:
-            matched = cases_by_post.get(p.id, [])
-            if not matched and p.cover_image:
-                img_key = p.cover_image.split("?")[0]
-                matched = cases_by_post.get(img_key, [])
-
-            raw_comms = []
-            if p.raw_comments_json:
-                try:
-                    raw_comms = json.loads(p.raw_comments_json)
-                except Exception:
-                    raw_comms = []
-
-            safe_id = str(p.id).replace(":", "_").replace("/", "_")
-            local_cover = os.path.join("static", "covers", f"{safe_id}.jpg")
-            resolved_cover = p.cover_image
-            if os.path.exists(local_cover) and os.path.getsize(local_cover) > 500:
-                resolved_cover = f"http://localhost:8000/static/covers/{safe_id}.jpg"
-            elif not resolved_cover or "scontent" in resolved_cover:
-                fallback_cover = os.path.join("static", "covers", "default_cover.jpg")
-                resolved_cover = f"http://localhost:8000/static/covers/default_cover.jpg" if os.path.exists(fallback_cover) else f"http://localhost:8000/api/v1/meta/post-image/{safe_id}"
-
-            post_source = getattr(p, "source", None) or ("Instagram" if "IG" in str(p.id) else "Facebook")
-
-            results.append({
-                "id": p.id,
-                "source": post_source,
-                "title": p.title,
-                "message": p.message,
-                "cover_image": resolved_cover,
-                "media_type": p.media_type,
-                "published_at": p.published_at,
-                "month_key": p.month_key,
-                "permalink_url": p.permalink_url,
-                "total_comments": max(p.total_comments, len(matched), len(raw_comms)),
-                "cases_count": len(matched),
-                "likes_count": p.likes_count or 120,
-                "views_count": p.views_count or 1850,
-                "shares_count": p.shares_count or 18,
-                "cases": matched,
-                "raw_comments": raw_comms
-            })
-
-        return results
-
-    # 2. Fallback por si la tabla MetaPost no tiene datos aún
-    page_token = settings.META_PAGE_ACCESS_TOKEN
-    page_id = settings.META_PAGE_ID or "275486829735525"
-    all_cases = db.query(Case).all()
-    posts_data = []
-
-    if page_token and len(page_token) > 20:
-        try:
-            url = (
-                f"https://graph.facebook.com/v21.0/{page_id}/posts?"
-                f"fields=id,message,created_time,full_picture,attachments{{media_type,type}},permalink_url,"
-                f"comments.summary(true)&limit={limit}&access_token={page_token}"
-            )
-            req = urllib.request.Request(url)
-            with urllib.request.urlopen(req, timeout=6) as resp:
-                raw_fb = json.loads(resp.read().decode())
-                
-                for p in raw_fb.get("data", []):
-                    post_id = p.get("id")
-                    pic = p.get("full_picture")
-                    msg = p.get("message", "Publicación en Facebook Oficial - Johan Steed")
-                    att = p.get("attachments", {}).get("data", [])
-                    mtype = "image" if pic else "none"
-                    if att and (att[0].get("media_type") == "video" or att[0].get("type") in ["video", "video_inline", "video_autoplay"]):
-                        mtype = "video"
-                    
-                    summary = p.get("comments", {}).get("summary", {})
-                    total_comments = summary.get("total_count", 0)
-
-                    matched_cases = []
-                    for c in all_cases:
-                        is_match = False
-                        if pic and c.image_url and pic.split("?")[0] == c.image_url.split("?")[0]:
-                            is_match = True
-                        if not is_match and c.internal_notes and post_id in c.internal_notes:
-                            is_match = True
-
-                        if is_match:
-                            matched_cases.append({
-                                "id": c.id,
-                                "author": c.author,
-                                "content": c.content,
-                                "category": c.category,
-                                "sentiment": c.sentiment,
-                                "priority": c.priority,
-                                "location": c.location,
-                                "date_time": c.date_time,
-                                "status": c.status,
-                                "priority_action": c.priority_action,
-                                "assigned_department": c.assigned_department
-                            })
-
-                    posts_data.append({
-                        "id": post_id,
-                        "title": msg.split("\n")[0][:90],
-                        "message": msg,
-                        "cover_image": pic,
-                        "media_type": mtype,
-                        "published_at": format_colombia_datetime(p.get("created_time")),
-                        "permalink_url": p.get("permalink_url"),
-                        "total_comments": max(total_comments, len(matched_cases)),
-                        "cases_count": len(matched_cases),
-                        "cases": matched_cases
-                    })
-        except Exception as e:
-            logger.warning(f"Error consultando posts de Meta API: {e}.")
-
-    return posts_data
+@router.get("/post-thumbnail/{post_id}")
+def get_post_thumbnail(post_id: str):
+    from app.services.post_images import get_thumbnail
+    thumbnail = get_thumbnail(post_id)
+    if thumbnail is None:
+        raise HTTPException(status_code=404, detail="Portada no disponible")
+    return FileResponse(thumbnail, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
 
 
 @router.get("/post-image/{post_id}")
@@ -406,13 +276,14 @@ def get_post_cover_image(post_id: str):
     Retorna la carátula multimedia permanente del post almacenada localmente.
     Evita expiración de enlaces CDN de Meta.
     """
-    safe_id = post_id.replace(":", "_").replace("/", "_")
+    import re
+    from app.services.post_images import GENERIC_COVERS
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", post_id) or f"{post_id}.jpg" in GENERIC_COVERS:
+        raise HTTPException(status_code=404, detail="Portada no disponible")
+    safe_id = post_id
     local_file = os.path.join("static", "covers", f"{safe_id}.jpg")
     if os.path.exists(local_file) and os.path.getsize(local_file) > 500:
         return FileResponse(local_file, media_type="image/jpeg")
-    fallback = os.path.join("static", "covers", "default_cover.jpg")
-    if os.path.exists(fallback):
-        return FileResponse(fallback, media_type="image/jpeg")
     raise HTTPException(status_code=404, detail="Carátula no encontrada")
 
 @router.post("/sync-live")
@@ -422,32 +293,45 @@ def sync_live_meta_content(db: Session = Depends(get_db)):
     Actualiza métricas de reproducciones, likes, nuevos comentarios ciudadanos y
     ejecuta el triaje automático con IA.
     """
+    started_at = time.perf_counter()
+    sync_stats = {}
+    instagram_stats = {}
     try:
         from sync_live_service import sync_facebook_live_posts, sync_instagram_publications
-        fb_synced = sync_facebook_live_posts(db)
-        ig_synced = sync_instagram_publications(db)
+        ig_synced = sync_instagram_publications(db, stats=instagram_stats, max_posts=50)
+        fb_synced = sync_facebook_live_posts(db, stats=sync_stats, max_posts=50)
     except Exception as e:
         logger.warning(f"Error ejecutando sincronizador en vivo: {e}")
-        fb_synced = 0
-        ig_synced = 0
+        db.rollback()
+        raise HTTPException(status_code=502, detail="No fue posible completar la sincronización con Meta") from None
 
     total_posts = db.query(MetaPost).count()
     total_cases = db.query(Case).count()
     updated_at_str = datetime.now().strftime("%I:%M:%S %p")
+    errors = sync_stats.get("errors", []) + instagram_stats.get("errors", [])
 
     return {
-        "status": "success",
+        "status": "partial" if errors else "success",
         "timestamp": updated_at_str,
-        "message": "Sincronización en vivo con Meta Graph API (Facebook e Instagram) exitosa.",
+        "message": "Sincronización con Meta finalizada con incidencias." if errors else "Sincronización con Meta finalizada.",
         "posts_monitored": total_posts,
         "cases_classified": total_cases,
-        "facebook_synced": fb_count if 'fb_count' in locals() else fb_synced,
+        "facebook_synced": fb_synced,
+        "posts_updated": sync_stats.get("posts_updated", 0) + instagram_stats.get("posts_updated", 0),
         "instagram_synced": ig_synced,
-        "new_comments_captured": 14,
-        "api_latency_ms": 110,
-        "autonomous_mode": "ACTIVE_100_PERCENT",
-        "detail": f"Métricas de Likes, Alcance y Comentarios de Facebook e Instagram actualizadas a las {updated_at_str}. Canal de escucha 100% operativo."
+        "instagram_status": instagram_stats.get("status"),
+        "instagram_detail": instagram_stats.get("detail"),
+        "new_comments_captured": sync_stats.get("new_comments_captured", 0) + instagram_stats.get("new_comments_captured", 0),
+        "api_latency_ms": round((time.perf_counter() - started_at) * 1000),
+        "errors": errors,
+        "detail": f"Publicaciones y comentarios consultados a las {updated_at_str}."
     }
+
+
+@router.get("/instagram/status")
+def get_instagram_status():
+    from app.services.instagram_graph import get_instagram_connection
+    return get_instagram_connection()
 
 
 

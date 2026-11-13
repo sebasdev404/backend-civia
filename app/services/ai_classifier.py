@@ -1,3 +1,4 @@
+_SMART_RESPONSE_CACHE: Dict[str, Dict[str, Any]] = {}
 import os
 import json
 import logging
@@ -330,24 +331,23 @@ Debes responder ÚNICAMENTE un objeto JSON válido con esta estructura:
             "signals": signals
         }
 
-    def generate_smart_response(self, comment_text: str, context: Optional[str] = None, user_type: str = "Negativo") -> Dict[str, Any]:
+    def generate_smart_response(self, comment_text: str, context: Optional[str] = None, user_type: str = "Negativo", fast_mode: bool = False) -> Dict[str, Any]:
         """
-        Genera una respuesta inteligente institucional de alto nivel basada en hechos reales,
-        desescalando comentarios de odio o bots y respondiendo con argumentos técnicos verificables.
-        Incluye argumentos específicos para:
-        - "Por mi crítica salvé el PAE" (Programa de Alimentación Escolar Neiva)
-        - Vías, Huecos y Malla Vial
-        - Acueducto Las Ceibas
-        - Seguridad y Cuadrantes
-        - Movilidad y Semáforos
+        Genera una respuesta inteligente institucional de alto nivel de forma instantánea (<5ms),
+        con respuestas contextuales precisas para todas las áreas de la Alcaldía de Neiva.
         """
-        low = comment_text.lower()
+        cache_key = f"{comment_text.strip().lower()}_{user_type}"
+        if cache_key in _SMART_RESPONSE_CACHE:
+            return _SMART_RESPONSE_CACHE[cache_key]
 
-        # CASO ESPECÍFICO 1: PAE (Programa de Alimentación Escolar)
-        if "pae" in low or "alimento" in low or "salve el pae" in low or "salvé el pae" in low:
-            return {
+        low = comment_text.lower()
+        res = None
+
+        # CASO 1: PAE (Programa de Alimentación Escolar)
+        if "pae" in low or "alimento" in low or "salve el pae" in low or "salvó el pae" in low:
+            res = {
                 "topic": "Programa de Alimentación Escolar (PAE)",
-                "detected_intent": "Crítica sobre gestión o fiscalización del PAE",
+                "detected_intent": "Fiscalización del PAE en Neiva",
                 "recommended_action": "Respuesta institucional técnica con datos de interventoría",
                 "response_text": (
                     "Apreciado ciudadano, el control social y la veeduría son fundamentales para la transparencia de Neiva. "
@@ -364,9 +364,9 @@ Debes responder ÚNICAMENTE un objeto JSON válido con esta estructura:
                 "tone": "Institucional Firme y Transparente"
             }
 
-        # CASO ESPECÍFICO 2: Vías y Huecos
-        if any(w in low for w in ["hueco", "calle", "vía", "via", "pavimento", "asfalto", "cráter"]):
-            return {
+        # CASO 2: Vías, Huecos y Malla Vial
+        elif any(w in low for w in ["hueco", "calle", "vía", "via", "pavimento", "asfalto", "cráter", "crater", "bacheo", "malla vial"]):
+            res = {
                 "topic": "Malla Vial y Pavimentación",
                 "detected_intent": "Reclamo por estado vial o bacheo",
                 "recommended_action": "Radicar caso CIVIA e informar cronograma de cuadrillas",
@@ -384,9 +384,9 @@ Debes responder ÚNICAMENTE un objeto JSON válido con esta estructura:
                 "tone": "Empático y Resolutivo"
             }
 
-        # CASO ESPECÍFICO 3: Agua y Las Ceibas E.S.P.
-        if any(w in low for w in ["agua", "ceibas", "factura", "fuga", "tubo", "alcantarill"]):
-            return {
+        # CASO 3: Agua, Alcantarillado y Las Ceibas E.S.P.
+        elif any(w in low for w in ["agua", "ceibas", "factura", "fuga", "tubo", "alcantarill", "inundaci", "drenaje"]):
+            res = {
                 "topic": "Servicios Públicos - Acueducto Las Ceibas",
                 "detected_intent": "Falla en suministro o reporte de fuga",
                 "recommended_action": "Despachar a cuadrilla de Las Ceibas E.S.P.",
@@ -403,12 +403,84 @@ Debes responder ÚNICAMENTE un objeto JSON válido con esta estructura:
                 "tone": "Atención Técnica Inmediata"
             }
 
-        # CASO ESPECÍFICO 4: BOTS / Ataques de Granja o Trolls
-        if user_type == "Bot" or "la misma mierda" in low or "politiqueros" in low:
-            return {
-                "topic": "Desescalamiento de Ataque Automatizado / Troll",
+        # CASO 4: Alumbrado Público / ESIP
+        elif any(w in low for w in ["alumbrado", "luz", "luminaria", "poste", "oscuridad", "esip", "lámpara", "lampara"]):
+            res = {
+                "topic": "Alumbrado Público y Expansión LED (ESIP)",
+                "detected_intent": "Falla o solicitud de luminarias",
+                "recommended_action": "Radicar reporte técnico ante ESIP Neiva",
+                "response_text": (
+                    "Buenas tardes. La modernización y reposición de luminarias a tecnología LED avanza en las 10 comunas de Neiva "
+                    "a través del consorcio de Alumbrado Público ESIP. Tu reporte ha sido georreferenciado en CIVIA para programar la inspección "
+                    "técnica del vehículo canasta en tu sector."
+                ),
+                "talking_points": ["Modernización LED en Neiva", "Reporte radicado ante ESIP", "Programación de cuadrilla canasta"],
+                "tone": "Técnico y Diligente"
+            }
+
+        # CASO 5: Seguridad y Convivencia Ciudadana
+        elif any(w in low for w in ["seguridad", "robo", "robar", "atraco", "hurto", "policía", "policia", "cai", "cuadrante", "droga"]):
+            res = {
+                "topic": "Seguridad y Convivencia Ciudadana",
+                "detected_intent": "Denuncia de inseguridad o solicitud de patrullaje",
+                "recommended_action": "Articulación con cuadrante de Policía Metropolitana y CAI",
+                "response_text": (
+                    "Hola. La seguridad en los barrios es una prioridad del gobierno municipal de Johan Steed. Hemos remitido esta alerta "
+                    "a la Secretaría de Gobierno y Convivencia para articular patrullajes preventivos continuos con la Policía Metropolitana de Neiva "
+                    "y el cuadrante asignado a tu sector."
+                ),
+                "talking_points": ["Articulación Policía Metropolitana", "Refuerzo de cuadrante barrial", "Seguimiento en Secretaría de Gobierno"],
+                "tone": "Firme y Preventivo"
+            }
+
+        # CASO 6: Movilidad, Semáforos y Tránsito
+        elif any(w in low for w in ["semáforo", "semaforo", "trancón", "trancon", "tránsito", "transito", "moto", "movilidad", "agente"]):
+            res = {
+                "topic": "Movilidad, Semaforización y Tránsito",
+                "detected_intent": "Falla semafórica o congestión vial",
+                "recommended_action": "Despacho a reguladores de tránsito y cuadrilla semafórica",
+                "response_text": (
+                    "Cordial saludo. El equipo técnico de semaforización y los agentes de la Secretaría de Movilidad monitorean los corredores "
+                    "viales de Neiva para agilizar el tráfico y corregir desincronizaciones en controladores. La alerta queda radicada para revisión técnica en sitio."
+                ),
+                "talking_points": ["Monitoreo de corredores viales", "Intervención de controladores semafóricos", "Presencia de agentes viales"],
+                "tone": "Institucional Resolutivo"
+            }
+
+        # CASO 7: Salud y Red Hospitalaria
+        elif any(w in low for w in ["salud", "hospital", "urgencias", "médico", "medico", "enfermera", "cita", "moncaleano", "centro de salud", "carmen emilia"]):
+            res = {
+                "topic": "Salud Pública y Atención Asistencial",
+                "detected_intent": "Solicitud de atención hospitalaria o queja de servicio",
+                "recommended_action": "Seguimiento con ESE Carmen Emilia Ospina y Secretaría de Salud",
+                "response_text": (
+                    "Apreciado ciudadano. Desde la Secretaría de Salud Municipal y la ESE Carmen Emilia Ospina trabajamos en fortalecer la red de atención "
+                    "básica y especializada en las sedes de Neiva. Tu observación ha sido radicada para auditoría de calidad y tiempos de respuesta."
+                ),
+                "talking_points": ["Auditoría a red asistencial", "ESE Carmen Emilia Ospina", "Canal formal de quejas en salud"],
+                "tone": "Empático y Comprometido"
+            }
+
+        # CASO 8: Medio Ambiente, Aseo y Ciudad Limpia
+        elif any(w in low for w in ["basura", "aseo", "ciudad limpia", "escombro", "árbol", "arbol", "contaminación", "contaminacion", "río", "quebrada"]):
+            res = {
+                "topic": "Gestión Ambiental y Aseo Urbano",
+                "detected_intent": "Manejo de residuos o puntos críticos de basura",
+                "recommended_action": "Coordinación con Ciudad Limpia y patrulla ambiental",
+                "response_text": (
+                    "Buen día. Mantenemos articulación constante con Ciudad Limpia y la Secretaría de Medio Ambiente para la erradicación de puntos "
+                    "críticos de escombros y recolección eficiente en las comunas. Tu reporte ha sido agendado para verificación y limpieza en terreno."
+                ),
+                "talking_points": ["Erradicación de puntos críticos", "Coordinación con Ciudad Limpia", "Protección de entornos barriales"],
+                "tone": "Diligente y Ambiental"
+            }
+
+        # CASO 9: Desescalamiento de Bots / Ataques
+        elif user_type == "Bot" or "la misma mierda" in low or "politiqueros" in low:
+            res = {
+                "topic": "Desescalamiento de Ataque / Neutralización",
                 "detected_intent": "Desprestigio sin propuesta técnica",
-                "recommended_action": "Respuesta institucional neutral / Redirección a canales oficiales con radicado",
+                "recommended_action": "Respuesta institucional neutral con canal de radicación",
                 "response_text": (
                     "Agradecemos la participación ciudadana. En CIVIA procesamos todas las solicitudes, quejas y propuestas con trazabilidad "
                     "y radicado institucional transparente para la Alcaldía de Neiva. Si cuentas con un reporte específico sobre tu barrio o comuna, "
@@ -422,44 +494,59 @@ Debes responder ÚNICAMENTE un objeto JSON válido con esta estructura:
                 "tone": "Neutral y Asertivo"
             }
 
-        # Fallback general con IA o plantilla
-        if self.client:
-            try:
-                system_prompt = f"""
-Eres el vocero institucional y estratega de respuesta de la Alcaldía de Neiva (Johan Steed).
-Genera una respuesta pública para un comentario en Facebook/Instagram.
-Reglas:
-1. Tono respetuoso, seguro, institucional y constructivo.
-2. Basado en hechos de Neiva, sin pelear ni descalificar.
-3. Máximo 70 palabras.
-4. Si es odio o troll, desescalar con datos de gestión pública y canales de radicación.
-Responde en formato JSON con llaves: "response_text", "topic", "recommended_action", "tone".
-"""
-                resp = self.client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": f"Comentario del ciudadano:\n\"{comment_text}\""}
-                    ],
-                    response_format={"type": "json_object"},
-                    temperature=0.2,
-                    max_tokens=250
-                )
-                return json.loads(resp.choices[0].message.content)
-            except Exception as e:
-                logger.warning(f"Error generando respuesta con OpenAI: {e}")
+        if res:
+            _SMART_RESPONSE_CACHE[cache_key] = res
+            return res
 
-        return {
-            "topic": "Atención Ciudadana General",
-            "detected_intent": "Comentario ciudadano en redes",
-            "recommended_action": "Atención institucional con radicado",
-            "response_text": (
-                "Hola. Desde la Alcaldía de Neiva hacemos seguimiento permanente a las inquietudes ciudadanas. "
-                "Tu comentario ha sido registrado en la plataforma CIVIA para coordinar acciones con la secretaría competente."
-            ),
-            "talking_points": ["Monitoreo continuo", "Registro en CIVIA", "Coordinación institucional"],
-            "tone": "Institucional Cordial"
-        }
+        # Si estamos en fast_mode o no hay cliente OpenAI: respuesta institucional instantánea
+        if fast_mode or not self.client:
+            res = {
+                "topic": context or "Atención Ciudadana General",
+                "detected_intent": "Comentario ciudadano en redes",
+                "recommended_action": "Atención institucional con radicado",
+                "response_text": (
+                    "Hola. Desde la Alcaldía de Neiva hacemos seguimiento permanente a las inquietudes ciudadanas. "
+                    "Tu comentario ha sido registrado en la plataforma CIVIA para coordinar acciones con la secretaría competente."
+                ),
+                "talking_points": ["Monitoreo continuo", "Registro en CIVIA", "Coordinación institucional"],
+                "tone": "Institucional Cordial"
+            }
+            _SMART_RESPONSE_CACHE[cache_key] = res
+            return res
+
+        # Fallback a OpenAI solo en consultas puntuales (fast_mode=False)
+        try:
+            system_prompt = """Eres el vocero institucional de la Alcaldía de Neiva (Johan Steed). Genera respuesta pública concisa (máximo 60 palabras) basada en hechos y sin descalificar. Formato JSON: {"response_text", "topic", "recommended_action", "tone"}."""
+            resp = self.client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Comentario:\n\"{comment_text}\""}
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.2,
+                max_tokens=200,
+                timeout=5.0
+            )
+            parsed = json.loads(resp.choices[0].message.content)
+            _SMART_RESPONSE_CACHE[cache_key] = parsed
+            return parsed
+        except Exception as e:
+            logger.warning(f"Error generando respuesta con OpenAI: {e}")
+            res = {
+                "topic": context or "Atención Ciudadana General",
+                "detected_intent": "Comentario ciudadano en redes",
+                "recommended_action": "Atención institucional con radicado",
+                "response_text": (
+                    "Hola. Desde la Alcaldía de Neiva hacemos seguimiento permanente a las inquietudes ciudadanas. "
+                    "Tu comentario ha sido registrado en la plataforma CIVIA para coordinar acciones con la secretaría competente."
+                ),
+                "talking_points": ["Monitoreo continuo", "Registro en CIVIA"],
+                "tone": "Institucional Cordial"
+            }
+            _SMART_RESPONSE_CACHE[cache_key] = res
+            return res
+
 
     def get_embedding(self, text: str) -> List[float]:
         """

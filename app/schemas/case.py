@@ -85,5 +85,6 @@ class CaseResponse(CaseBase):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     post_data: Optional[MetaPostSummary] = None
+    comment_url: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)

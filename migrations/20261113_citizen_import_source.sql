@@ -1,0 +1,1 @@
+ALTER TABLE citizens ADD COLUMN IF NOT EXISTS source_data JSON;

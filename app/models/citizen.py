@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, Float, Text, DateTime, func
+from sqlalchemy import Column, String, Integer, Float, Text, DateTime, JSON, func
 from app.core.database import Base
 
 class Citizen(Base):
@@ -15,13 +15,14 @@ class Citizen(Base):
     followers_count = Column(Integer, default=0)
     following_count = Column(Integer, default=0)
     account_created_at = Column(String(100), nullable=True)
-    user_type = Column(String(50), default="Negativo")  # "Positivo", "Negativo", "Bot"
+    user_type = Column(String(50), default="Sin clasificar")
     bot_probability = Column(Float, default=0.0)
     bot_origin = Column(String(150), nullable=True)  # "Granja de Cuentas / Campaña Opositora", "Perfil Falso Sin Foto", "Automatizado Spam", "Humano Verificado"
-    total_reports = Column(Integer, default=1)
-    credibility_score = Column(Float, default=85.0)
-    sentiment_tendency = Column(String(50), default="Crítico")
+    total_reports = Column(Integer, default=0)
+    credibility_score = Column(Float, default=0.0)
+    sentiment_tendency = Column(String(50), default="Sin evaluar")
     status = Column(String(50), default="Activo")
     notes = Column(Text, nullable=True)
     origen_dato = Column(String(50), default="BASE_SUBIDA")  # "BASE_SUBIDA", "META_COMMENT", "OPERADOR", "FORMULARIO"
+    source_data = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

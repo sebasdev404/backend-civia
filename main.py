@@ -29,8 +29,8 @@ async def periodic_meta_sync_loop():
             db = SessionLocal()
             try:
                 # Sincronizar en un hilo para no bloquear el bucle de eventos asíncrono
-                await asyncio.to_thread(sync_facebook_live_posts, db)
-                await asyncio.to_thread(sync_instagram_publications, db)
+                await asyncio.to_thread(sync_instagram_publications, db, max_posts=50)
+                await asyncio.to_thread(sync_facebook_live_posts, db, max_posts=50)
             finally:
                 db.close()
         except asyncio.CancelledError:
@@ -59,12 +59,20 @@ app = FastAPI(
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # CORS para comunicación con Next.js (puerto 3000)
+# IMPORTANTE: allow_credentials=True es incompatible con allow_origins=["*"]
+# Se deben listar los orígenes explícitamente cuando se usan credenciales
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 app.include_router(api_v1_router, prefix="/api/v1")
