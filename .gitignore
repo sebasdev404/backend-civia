@@ -43,6 +43,8 @@ ENV/
 # Logs
 *.log
 static/thumbnails/
+# Downloaded Meta covers are runtime cache; keep them locally.
+static/covers/
 
 # Temporary test images / samples
 esri_sample.png
