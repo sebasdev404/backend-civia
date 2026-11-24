@@ -81,7 +81,7 @@ Este archivo es la lista central de avance. Una tarea terminada se marca `[x]` y
 - [ ] Definir retención y tratamiento de datos personales y multimedia.
 - [ ] Validar recuperación y reintentos de trabajos; revisar coordinación antes de usar múltiples procesos o réplicas.
 - [ ] Configurar monitoreo, alertas y un procedimiento de reversión del despliegue.
-- [ ] Revisar, agrupar y publicar los cambios locales posteriores a la entrega anterior en ambos repositorios.
+- [x] ~~Revisar, agrupar y publicar esta entrega en ambos repositorios.~~ Publicados y verificados en `main` el 24/11/2026: backend `aed2eee`, frontend `bf251dc`. No equivale a desplegar en producción; futuros cambios necesitarán su propia publicación.
 - [ ] Desplegar, ejecutar pruebas de aceptación en el entorno publicado y aprobar el inicio de operación.
 
 ## Registro de evidencias y cambios
@@ -94,6 +94,7 @@ Este archivo es la lista central de avance. Una tarea terminada se marca `[x]` y
 | 24/11/2026 | Reorganización de revisión de comentarios | TypeScript y lint de componentes aprobados; 10 pruebas de triaje aprobadas; respuesta HTTP y campos de origen comprobados. Inspección visual automatizada no disponible. |
 | 24/11/2026 | Contexto de publicación y auditoría inicial | Verificación individual con Meta; 9 pruebas de lectura de casos aprobadas; el informe no certifica limpieza de toda la plataforma. |
 | 24/11/2026 | Recuperación de referencias históricas | Lote de 1115 revisado; 871 IDs recuperados y 244 casos señalados; 12 pruebas aisladas y ensayo PostgreSQL con rollback; sin eliminación ni fusión de casos. |
+| 24/11/2026 | Publicación de la entrega | Backend `aed2eee` y frontend `bf251dc` confirmados en GitHub. Credenciales, Excel, base de datos, caché e informes detallados locales excluidos. |
 
 Documentos de referencia:
 

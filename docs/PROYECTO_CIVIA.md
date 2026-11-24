@@ -4,7 +4,7 @@ Fecha de revisión: **24 de noviembre de 2026**.
 
 **Lista de avance:** [tareas terminadas y pendientes](SEGUIMIENTO.md). Las completadas aparecen marcadas y tachadas, con alcance y evidencia.
 
-Este es el documento central del proyecto. Describe el código local inspeccionado, no una certificación de funcionamiento en producción. Hay cambios locales pendientes de commit en ambos repositorios; lo que está aquí puede ser más reciente que GitHub. No se consultó Meta ni se ejecutaron análisis de pago para preparar esta revisión.
+Este es el documento central del proyecto. Describe el código inspeccionado, no una certificación de funcionamiento en producción. La entrega del 24/11/2026 se publicó en ambos repositorios; consultar `SEGUIMIENTO.md` y el historial Git para distinguirla de cambios posteriores. La revisión documental inicial no consultó Meta ni ejecutó análisis de pago; las verificaciones posteriores de procedencia se documentan por separado.
 
 ## 1. Qué es CIVIA
 
