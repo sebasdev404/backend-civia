@@ -1,11 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, desc
-from typing import List, Optional, Union, Dict, Any
+from typing import List, Optional, Union, Dict, Any, Literal
 from datetime import datetime
 
 from app.core.database import get_db
 from app.models.case import Case
+from app.models.case_comment import CaseComment
+from app.models.case_provenance import CaseProvenanceReview
 from app.models.incident import Incident
 from app.models.meta_post import MetaPost
 from app.services.case_reads import list_case_summaries
@@ -69,9 +71,9 @@ def find_case_or_fallback(case_id: str, db: Session) -> Case:
             status=incident.status or "Pendiente",
             comments_count=incident.reports_count or 1,
             date_time=incident.date_time or datetime.now().strftime("%d %b %Y, %I:%M %p"),
-            institutional_radicado=f"RAD-{cat_prefix}-2026-{rad_num}",
-            assigned_department=dept,
-            assigned_to="Equipo Operativo Comuna",
+            institutional_radicado=None,
+            assigned_department=None,
+            assigned_to=None,
             priority_action=True if incident.priority == "Alta" else False,
             impact_if_solved="Atención y mitigación prioritaria de la problemática en el sector.",
             impact_if_ignored="Afectación prolongada a la comunidad y recurrencia de quejas.",
@@ -99,13 +101,16 @@ def get_cases(
     paginated: bool = Query(False),
     department: Optional[str] = Query(None),
     priority_only: bool = Query(False),
+    provenance: Literal["all", "needs_review", "recovered_local"] = Query("all"),
     db: Session = Depends(get_db),
 ):
     if paginated:
         return list_case_summaries(db, search=search, priority=priority, category=category,
             source=source, status=status, department=department, priority_only=priority_only,
-            limit=min(limit, 100), offset=skip, asset_base=str(request.base_url).rstrip("/"))
+            limit=min(limit, 100), offset=skip, provenance=provenance, asset_base=str(request.base_url).rstrip("/"))
     query = db.query(Case)
+    if provenance != "all":
+        query = query.filter(Case.id.in_(db.query(CaseProvenanceReview.case_id).filter(CaseProvenanceReview.status == provenance)))
 
     if priority and priority != "all":
         query = query.filter(Case.priority == priority)
@@ -142,6 +147,12 @@ def get_cases(
 def get_case_by_id(case_id: str, request: Request, db: Session = Depends(get_db)):
     case_item = find_case_or_fallback(case_id, db)
     response_obj = CaseResponse.model_validate(case_item)
+    provenance = db.get(CaseProvenanceReview, case_item.id)
+    if provenance:
+        response_obj.provenance_status, response_obj.provenance_reason = provenance.status, provenance.reason
+    response_obj.linked_comments = [{"post_id": link.post_id, "comment_id": link.comment_id,
+        "comment": link.comment_json, "linked_by": link.linked_by, "linked_at": link.created_at}
+        for link in db.query(CaseComment).filter(CaseComment.case_id == case_item.id).order_by(CaseComment.created_at, CaseComment.comment_id)]
     
     # Enriquecer con información real del Post de Johan Steed
     post = None
@@ -208,6 +219,8 @@ def create_case(case_in: CaseCreate, db: Session = Depends(get_db)):
 def update_case(case_id: str, case_update: CaseUpdate, db: Session = Depends(get_db)):
     case_item = find_case_or_fallback(case_id, db)
     update_data = case_update.model_dump(exclude_unset=True)
+    if update_data.get('status') == 'No requiere gestión' and case_item.status != 'No requiere gestión':
+        update_data['internal_notes'] = (case_item.internal_notes or '') + '\n[' + datetime.now().isoformat(timespec='minutes') + '] [Revisión CIVIA]: Comentario marcado como sin solicitud de atención; se conserva el origen.'
     for field, value in update_data.items():
         setattr(case_item, field, value)
 
@@ -219,18 +232,22 @@ def update_case(case_id: str, case_update: CaseUpdate, db: Session = Depends(get
 def dispatch_case(case_id: str, payload: CaseDispatch, db: Session = Depends(get_db)):
     """Despacha un caso a una Secretaría o entidad de Neiva, cambiando estado a En Gestión."""
     case_item = find_case_or_fallback(case_id, db)
+    if case_item.status in ('Resuelto', 'No requiere gestión'):
+        raise HTTPException(409, 'El caso está resuelto. No se puede reasignar sin una reapertura.')
+    if not payload.assigned_department.strip() or not (payload.assigned_to or '').strip():
+        raise HTTPException(422, 'Indica la entidad y la persona responsable.')
     case_item.assigned_department = payload.assigned_department
     if payload.assigned_to:
         case_item.assigned_to = payload.assigned_to
     case_item.status = "En Gestión"
 
-    if payload.note:
-        now_str = datetime.now().strftime("%d %b %Y, %H:%M")
-        new_note = f"[{now_str}] [Despacho a {payload.assigned_department}]: {payload.note}"
-        if case_item.internal_notes:
-            case_item.internal_notes = f"{case_item.internal_notes}\n{new_note}"
-        else:
-            case_item.internal_notes = new_note
+    now_str = datetime.now().strftime("%d %b %Y, %H:%M")
+    new_note = f"[{now_str}] [Asignación CIVIA a {payload.assigned_department} / {payload.assigned_to}]: {payload.note or 'Asignación registrada.'}"
+    if case_item.internal_notes:
+        case_item.internal_notes = f"{case_item.internal_notes}\n{new_note}"
+    else:
+        case_item.internal_notes = new_note
+
 
     db.commit()
     db.refresh(case_item)
@@ -255,6 +272,10 @@ def add_case_note(case_id: str, payload: CaseNoteCreate, db: Session = Depends(g
 def resolve_case(case_id: str, payload: CaseResolve, db: Session = Depends(get_db)):
     """Marca un caso como Resuelto, registrando la nota de cierre técnico y responsable."""
     case_item = find_case_or_fallback(case_id, db)
+    if not case_item.assigned_department or not case_item.assigned_to:
+        raise HTTPException(409, 'Asigna entidad y responsable antes de cerrar el caso.')
+    if len(payload.resolution_note.strip()) < 20 or not payload.resolved_by.strip():
+        raise HTTPException(422, 'Documenta la solución y su soporte, e indica quién cierra el caso.')
     case_item.status = "Resuelto"
     case_item.resolution_note = payload.resolution_note
     case_item.resolved_by = payload.resolved_by

@@ -11,6 +11,7 @@ from app.api.v1.meta import router as meta_router
 from app.core.database import SessionLocal, get_db
 from app.models.case import Case
 from app.models.meta_post import MetaPost
+from app.models.case_provenance import CaseProvenanceReview
 from app.services.post_images import real_image_url
 
 
@@ -114,6 +115,33 @@ class CaseReadIntegrationTests(unittest.TestCase):
     def test_invalid_page_is_rejected(self):
         for query in ("limit=0", "skip=-1", "limit=1001"):
             self.assertEqual(self.client.get("/api/v1/cases?paginated=true&" + query).status_code, 422)
+
+    def test_original_post_context_is_exact_and_never_guessed(self):
+        for item in self.page()["items"]:
+            post = self.db.get(MetaPost, item["post_id"]) if item["post_id"] else None
+            if post:
+                self.assertEqual(item["post_title"], post.title)
+                self.assertEqual(item["post_message"], post.message[:600] if post.message is not None else None)
+                self.assertEqual(item["post_permalink_url"], post.permalink_url)
+                self.assertEqual(item["source_status"], "post_available")
+                if item["comment_url"]:
+                    self.assertIn("comment_id=" + item["comment_id"].rsplit("_", 1)[-1], item["comment_url"])
+            else:
+                self.assertIsNone(item["post_permalink_url"])
+                self.assertIsNone(item["comment_url"])
+                self.assertNotEqual(item["source_status"], "post_available")
+
+    def test_provenance_filter_and_warnings_match_saved_audit(self):
+        for status in ("needs_review", "recovered_local"):
+            result = self.page(provenance=status)
+            expected = self.db.query(CaseProvenanceReview).filter_by(status=status).count()
+            self.assertEqual(result["total"], expected)
+            self.assertTrue(all(item["provenance_status"] == status for item in result["items"]))
+            for item in result["items"][:1]:
+                detail = self.client.get("/api/v1/cases/" + item["id"]).json()
+                self.assertEqual(detail["provenance_status"], status)
+                self.assertEqual(detail["provenance_reason"], item["provenance_reason"])
+        self.assertEqual(self.client.get("/api/v1/cases?provenance=not-a-status").status_code, 422)
 
 
 if __name__ == "__main__":

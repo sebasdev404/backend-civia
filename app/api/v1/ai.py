@@ -320,8 +320,7 @@ class BotDetectRequest(BaseModel):
 @router.post("/detect-bot")
 def detect_bot_endpoint(payload: BotDetectRequest):
     """
-    Evalúa perfil y texto para detectar si es un bot, ratio seguidores/seguidos,
-    antigüedad de cuenta, probabilidad de bot e identifica el origen.
+    Devuelve señales para revisión sin certificar identidad, origen ni probabilidad de bot.
     """
     try:
         bot_data = ai_classifier.detect_bot(

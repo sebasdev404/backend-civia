@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict
-from typing import Optional, Union, Dict, Any
+from typing import Optional, Union, Dict, Any, List
 from datetime import datetime
 
 class CaseBase(BaseModel):
@@ -86,5 +86,8 @@ class CaseResponse(CaseBase):
     updated_at: Optional[datetime] = None
     post_data: Optional[MetaPostSummary] = None
     comment_url: Optional[str] = None
+    linked_comments: List[Dict[str, Any]] = []
+    provenance_status: Optional[str] = None
+    provenance_reason: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)

@@ -162,7 +162,8 @@ def sync_facebook_post_comments(db, post_id: str) -> dict:
     }
 
 
-def sync_facebook_live_posts(db, stats=None, max_posts=3000) -> int:
+def sync_facebook_live_posts(db, stats=None, max_posts=3000, *, classify_cases=True,
+                             analyze_comments=True, cache_covers=True, progress=None) -> int:
     """Descarga y sincroniza las publicaciones recientes de Facebook de Johan Steed."""
     if stats is None:
         stats = {}
@@ -204,14 +205,47 @@ def sync_facebook_live_posts(db, stats=None, max_posts=3000) -> int:
     new_cases_count = 0
     total_db_cases = db.query(Case).count()
 
-    for p in all_raw_posts:
+    if progress:
+        # Publicar metadatos primero; la pantalla no tiene que esperar a recorrer
+        # todos los comentarios de una publicación para mostrar su existencia.
+        for item in all_raw_posts:
+            post = db.get(MetaPost, item["id"])
+            if post is None:
+                post = MetaPost(id=item["id"])
+                db.add(post)
+                new_posts_count += 1
+            caption = item.get("message") or "Publicación de Johan Steed"
+            post.title, post.message = caption.split("\n")[0][:120], caption
+            post.source, post.created_time = "Facebook", item.get("created_time")
+            post.published_at = format_colombia_datetime(post.created_time)
+            post.month_key, post.permalink_url = get_month_key(post.created_time), item.get("permalink_url")
+            post.cover_image = post.cover_image or item.get("full_picture")
+            attachments = (item.get("attachments") or {}).get("data", [])
+            post.media_type = "video" if attachments and "video" in str(attachments[0]).lower() else "image"
+            reported = (item.get("comments") or {}).get("summary", {}).get("total_count")
+            if isinstance(reported, int):
+                post.total_comments = reported
+        db.commit()
+        progress(network="Facebook", stage="comments", completed=0, total=len(all_raw_posts),
+                 detail=f"{len(all_raw_posts)} publicaciones de Facebook disponibles; consultando sus comentarios")
+
+    for post_index, p in enumerate(all_raw_posts):
         pid = p.get("id")
+        if progress:
+            progress(network="Facebook", stage="comments", completed=post_index, total=len(all_raw_posts),
+                     detail=f"Facebook: leyendo comentarios de la publicación {post_index + 1} de {len(all_raw_posts)}")
         created_time = p.get("created_time")
         message = p.get("message") or "Publicación Oficial de Johan Steed en Neiva"
         remote_pic = p.get("full_picture")
         permalink = p.get("permalink_url")
         try:
-            comments_data, total_comments = read_post_comments(p, token)
+            if progress:
+                def comment_progress(captured, total):
+                    progress(network="Facebook", stage="comments", completed=post_index, total=len(all_raw_posts),
+                             detail=f"Facebook: publicación {post_index + 1} de {len(all_raw_posts)}, {captured} comentarios recibidos de {total} reportados en esta consulta")
+                comments_data, total_comments = read_post_comments(p, token, progress=comment_progress)
+            else:
+                comments_data, total_comments = read_post_comments(p, token)
         except Exception as exc:
             # Conservar el estado anterior si alguna página o nodo no pudo leerse.
             stats["errors"].append(f"{pid}: {exc}")
@@ -219,7 +253,8 @@ def sync_facebook_live_posts(db, stats=None, max_posts=3000) -> int:
             continue
 
         # Descargar carátula local
-        cover_image = download_and_cache_cover(pid, remote_pic)
+        cached_post = db.get(MetaPost, pid)
+        cover_image = download_and_cache_cover(pid, remote_pic) if cache_covers else ((cached_post.cover_image if cached_post else None) or remote_pic)
 
         att = p.get("attachments", {}).get("data", [])
         media_type = "image"
@@ -231,7 +266,7 @@ def sync_facebook_live_posts(db, stats=None, max_posts=3000) -> int:
         title = first_line[:120] if first_line else f"Publicación del {format_colombia_datetime(created_time)}"
 
         # Buscar si ya existe en MetaPost
-        meta_post = db.query(MetaPost).filter(MetaPost.id == pid).first()
+        meta_post = db.query(MetaPost).filter(MetaPost.id == pid).with_for_update().first()
         is_new = False
         if not meta_post:
             meta_post = MetaPost(id=pid)
@@ -253,6 +288,10 @@ def sync_facebook_live_posts(db, stats=None, max_posts=3000) -> int:
         meta_post.likes_count = meta_post.likes_count or 0
         meta_post.views_count = meta_post.views_count or 0
         meta_post.shares_count = meta_post.shares_count or 0
+
+        from app.models.conversation import PostContext
+        from app.services.conversation import context_for
+        publication_context = json.dumps(context_for(meta_post, db.get(PostContext, pid)), ensure_ascii=False) if classify_cases else None
 
         # Contar únicamente IDs reales que no estaban en la captura anterior.
         try:
@@ -279,17 +318,21 @@ def sync_facebook_live_posts(db, stats=None, max_posts=3000) -> int:
                 "source": "Facebook",
                 "parent_id": (c.get("parent") or {}).get("id"),
                 "is_hidden": c.get("is_hidden"),
+                "likes_count": c.get("like_count"),
             })
             if c_id and c_id not in previous_ids:
                 new_comment_ids.add(c_id)
 
             # Si es un comentario relevante, verificar si ya tiene caso creado
-            if c_id and is_meaningful_comment(c_text):
+            if classify_cases and c_id and is_meaningful_comment(c_text):
+                from app.models.case_comment import CaseComment
+                if db.get(CaseComment, (pid, c_id)) is not None:
+                    continue
                 existing_case = db.query(Case).filter(Case.internal_notes.contains(c_id)).first()
                 if not existing_case:
                     # Crear caso clasificado con IA
                     try:
-                        ai_res = ai_classifier.classify_comment(c_text)
+                        ai_res = ai_classifier.classify_comment(c_text, post_context=publication_context)
                     except Exception:
                         ai_res = {
                             "category": "Atención Ciudadana",
@@ -326,7 +369,9 @@ def sync_facebook_live_posts(db, stats=None, max_posts=3000) -> int:
                         db.add(new_case)
                         db.flush()
                         new_cases_count += 1
-                        print(f"Nuevo caso ciudadano creado: {case_code} desde comentario en Facebook: {c_author}", flush=True)
+                        # No imprimir nombres/emojis: una consola Windows con otra codificación
+                        # no debe provocar rollback del caso y volver a consumir IA al reintentar.
+                        print(f"Nuevo caso ciudadano creado: {case_code} desde Facebook", flush=True)
                     except Exception as err_case:
                         db.rollback()
                         print(f"Aviso al insertar comentario individual {c_id}: {err_case}", flush=True)
@@ -336,19 +381,31 @@ def sync_facebook_live_posts(db, stats=None, max_posts=3000) -> int:
             db.commit()
             stats["posts_updated"] += 1
             stats["new_comments_captured"] += len(new_comment_ids)
+            if progress:
+                progress(network="Facebook", stage="metrics", completed=post_index + 1, total=len(all_raw_posts),
+                         detail=f"Facebook: {post_index + 1} publicaciones guardadas; consultando métricas")
+                from app.services.publications import capture_metrics
+                stats["errors"].extend(capture_metrics(db, pid, token))
         except Exception as err_post:
             db.rollback()
             stats["errors"].append(f"No se pudo guardar la publicación {pid}")
             print(f"Aviso al actualizar publicación {pid}: {err_post}", flush=True)
 
     print(f"Facebook sincronizado: {new_posts_count} posts nuevos o actualizados, {new_cases_count} casos ciudadanos creados.", flush=True)
+    if analyze_comments:
+        try:
+            from app.services.conversation import analyze_pending
+            stats["conversation_analysis"] = analyze_pending(db, limit=20)
+        except Exception:
+            db.rollback()
+            stats["errors"].append("El análisis contextual quedó pendiente; las capturas de Facebook están guardadas.")
     return new_posts_count
 
-def _prepare_instagram_media(media, token, comments_available):
+def _prepare_instagram_media(media, token, comments_available, cache_covers=True):
     """Descarga recursos sin compartir la sesión SQLAlchemy entre hilos."""
     is_video = media.get("media_type") == "VIDEO"
     cover_url = media.get("thumbnail_url") if is_video else media.get("media_url")
-    cover = download_and_cache_cover(f"IG_{media['id']}", cover_url) if cover_url else None
+    cover = download_and_cache_cover(f"IG_{media['id']}", cover_url) if cover_url and cache_covers else cover_url
     captured = None
     error = None
     if comments_available:
@@ -363,7 +420,7 @@ def _prepare_instagram_media(media, token, comments_available):
     return media, cover, captured, error
 
 
-def sync_instagram_publications(db, stats=None, max_posts=3000, only_missing=False) -> int:
+def sync_instagram_publications(db, stats=None, max_posts=3000, only_missing=False, *, progress=None, cache_covers=True) -> int:
     """Importa publicaciones y comentarios reales de la cuenta profesional vinculada."""
     if stats is None:
         stats = {}
@@ -385,7 +442,7 @@ def sync_instagram_publications(db, stats=None, max_posts=3000, only_missing=Fal
                 seen_posts += len(batch)
                 pending = [media for media in batch if media.get("id") and f"IG_{media['id']}" not in existing_ids]
                 stats["posts_skipped"] += len(batch) - len(pending)
-                for media, cover, captured, error in pool.map(lambda media: _prepare_instagram_media(media, token, connection["comments_available"]), pending):
+                for media, cover, captured, error in pool.map(lambda media: _prepare_instagram_media(media, token, connection["comments_available"], cache_covers), pending):
                     media_id = media["id"]
                     post_id = f"IG_{media_id}"
                     post = db.get(MetaPost, post_id)
@@ -393,6 +450,9 @@ def sync_instagram_publications(db, stats=None, max_posts=3000, only_missing=Fal
                     if is_new:
                         post = MetaPost(id=post_id, source="Instagram")
                         db.add(post)
+                    if progress:
+                        progress(network="Instagram", stage="comments", completed=stats["posts_updated"], total=len(pending),
+                                 detail=f"Instagram: guardando publicación {stats['posts_updated'] + 1}")
                     caption = media.get("caption") or ""
                     timestamp = media.get("timestamp")
                     post.title = (caption.split("\n")[0].strip() or "Publicación de Instagram")[:120]
@@ -403,7 +463,7 @@ def sync_instagram_publications(db, stats=None, max_posts=3000, only_missing=Fal
                     post.created_time = timestamp
                     post.published_at = format_colombia_datetime(timestamp) if timestamp else "Fecha no disponible"
                     post.month_key = timestamp[:7] if timestamp else None
-                    post.cover_image = cover
+                    post.cover_image = post.cover_image or cover if not cache_covers else cover
                     post.likes_count = media.get("like_count") or 0
                     post.views_count = post.views_count or 0
                     post.shares_count = post.shares_count or 0
@@ -425,6 +485,15 @@ def sync_instagram_publications(db, stats=None, max_posts=3000, only_missing=Fal
                         new_posts += int(is_new)
                         stats["posts_updated"] += 1
                         stats["new_comments_captured"] += len(new_ids)
+                        if progress and isinstance(media.get("like_count"), int):
+                            from app.models.publication import PublicationSnapshot
+                            snapshot = db.get(PublicationSnapshot, post_id)
+                            if snapshot is None:
+                                snapshot = PublicationSnapshot(post_id=post_id)
+                                db.add(snapshot)
+                            snapshot.likes_count, snapshot.status = media["like_count"], "available"
+                            snapshot.detail = "Me gusta devueltos por Instagram. Los datos no entregados se muestran como no disponibles."
+                            db.commit()
                     except Exception:
                         db.rollback()
                         stats["errors"].append(f"No fue posible guardar la publicación de Instagram {media_id}")

@@ -24,6 +24,10 @@ class IncidentCreate(IncidentBase):
 class IncidentResponse(IncidentBase):
     id: str
     created_at: Optional[datetime] = None
+    location_precision: Optional[str] = None
+    evidence_text: Optional[str] = None
+    verification_status: Optional[str] = None
+    source_url: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -8,8 +8,10 @@ from typing import Dict, Any, Optional, List
 import json
 from datetime import datetime, timezone, timedelta
 
+from app.api.dependencies import require_triage_user
 from app.core.config import settings
 from app.core.database import get_db
+from app.api.v1.auth import get_current_user
 from app.models.case import Case
 from app.models.meta_post import MetaPost
 from app.services.ai_classifier import ai_classifier
@@ -72,7 +74,11 @@ async def receive_meta_webhook(request: Request, db: Session = Depends(get_db)):
                     logger.info(f"Procesando comentario ciudadano con OpenAI: '{message_text}'")
                     try:
                         # 1. Clasificación automática con IA (OpenAI gpt-4o-mini)
-                        ai_analysis = ai_classifier.classify_comment(message_text)
+                        from app.models.conversation import PostContext
+                        from app.services.conversation import context_for
+                        post = db.get(MetaPost, value.get("post_id")) if value.get("post_id") else None
+                        context = json.dumps(context_for(post, db.get(PostContext, post.id)), ensure_ascii=False) if post else None
+                        ai_analysis = ai_classifier.classify_comment(message_text, post_context=context)
 
                         # 2. Generar código interno CIVIA
                         count = db.query(Case).count()
@@ -258,7 +264,12 @@ def get_monitored_post(post_id: str, request: Request, db: Session = Depends(get
                       asset_base=str(request.base_url).rstrip("/"))
     if not page["items"]:
         raise HTTPException(status_code=404, detail="Publicacion no encontrada")
-    return page["items"][0]
+    item = page["items"][0]
+    if "facebook" in (item.get("source") or "").lower():
+        from app.services.conversation import build_rows
+        rows, _ = build_rows(db, [db.get(MetaPost, post_id)])
+        item["conversation_analysis"] = {row["id"]: row for row in rows}
+    return item
 
 
 @router.get("/post-thumbnail/{post_id}")
@@ -286,46 +297,27 @@ def get_post_cover_image(post_id: str):
         return FileResponse(local_file, media_type="image/jpeg")
     raise HTTPException(status_code=404, detail="Carátula no encontrada")
 
-@router.post("/sync-live")
-def sync_live_meta_content(db: Session = Depends(get_db)):
-    """
-    Sincronización en tiempo real con las APIs de Meta (Facebook e Instagram).
-    Actualiza métricas de reproducciones, likes, nuevos comentarios ciudadanos y
-    ejecuta el triaje automático con IA.
-    """
-    started_at = time.perf_counter()
-    sync_stats = {}
-    instagram_stats = {}
-    try:
-        from sync_live_service import sync_facebook_live_posts, sync_instagram_publications
-        ig_synced = sync_instagram_publications(db, stats=instagram_stats, max_posts=50)
-        fb_synced = sync_facebook_live_posts(db, stats=sync_stats, max_posts=50)
-    except Exception as e:
-        logger.warning(f"Error ejecutando sincronizador en vivo: {e}")
-        db.rollback()
-        raise HTTPException(status_code=502, detail="No fue posible completar la sincronización con Meta") from None
+@router.post("/sync-live", status_code=202)
+def sync_live_meta_content(db: Session = Depends(get_db), user=Depends(get_current_user)):
+    from app.services.meta_sync_jobs import start_job
+    return start_job(db, "connected")
 
-    total_posts = db.query(MetaPost).count()
-    total_cases = db.query(Case).count()
-    updated_at_str = datetime.now().strftime("%I:%M:%S %p")
-    errors = sync_stats.get("errors", []) + instagram_stats.get("errors", [])
 
-    return {
-        "status": "partial" if errors else "success",
-        "timestamp": updated_at_str,
-        "message": "Sincronización con Meta finalizada con incidencias." if errors else "Sincronización con Meta finalizada.",
-        "posts_monitored": total_posts,
-        "cases_classified": total_cases,
-        "facebook_synced": fb_synced,
-        "posts_updated": sync_stats.get("posts_updated", 0) + instagram_stats.get("posts_updated", 0),
-        "instagram_synced": ig_synced,
-        "instagram_status": instagram_stats.get("status"),
-        "instagram_detail": instagram_stats.get("detail"),
-        "new_comments_captured": sync_stats.get("new_comments_captured", 0) + instagram_stats.get("new_comments_captured", 0),
-        "api_latency_ms": round((time.perf_counter() - started_at) * 1000),
-        "errors": errors,
-        "detail": f"Publicaciones y comentarios consultados a las {updated_at_str}."
-    }
+@router.get("/sync-status")
+def get_meta_sync_status(scope: str = Query("connected", max_length=200), db: Session = Depends(get_db),
+                         user=Depends(get_current_user)):
+    from app.services.meta_sync_jobs import job_data, latest_job
+    return job_data(latest_job(db, scope))
+
+
+@router.get("/sync-jobs/{job_id}")
+def get_sync_job(job_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    from app.models.publication import MetaSyncJob
+    from app.services.meta_sync_jobs import job_data
+    job = db.get(MetaSyncJob, job_id)
+    if job is None:
+        raise HTTPException(404, "Actualización no encontrada")
+    return job_data(job)
 
 
 @router.get("/instagram/status")
@@ -336,61 +328,6 @@ def get_instagram_status():
 
 
 @router.get("/triage-comments")
-def get_triage_comments(db: Session = Depends(get_db)):
-    """
-    Retorna comentarios reales de ciudadanos en Facebook e Instagram 
-    que están en supervisión de triaje o pendientes de clasificación manual.
-    """
-    posts = db.query(MetaPost).order_by(desc(MetaPost.created_time)).limit(20).all()
-    triage_items = []
-    
-    for p in posts:
-        if p.raw_comments_json:
-            try:
-                comms = json.loads(p.raw_comments_json)
-                for c in comms:
-                    c_id = c.get("id") or str(hash(c.get("content", "")))
-                    c_text = c.get("content") or c.get("message") or ""
-                    c_author = c.get("author") or "Ciudadano Neiva"
-                    
-                    if len(c_text) > 15 and not c_text.lower().startswith("http"):
-                        # Analizar toponimia o categoría básica
-                        low = c_text.lower()
-                        cat = "General"
-                        if any(w in low for w in ["vía", "via", "calle", "hueco", "paviment", "asfalto"]):
-                            cat = "Infraestructura Vial"
-                        elif any(w in low for w in ["agua", "tubo", "fuga", "ceibas", "factura"]):
-                            cat = "Servicios Públicos"
-                        elif any(w in low for w in ["semáforo", "semaforo", "tránsito", "tráfico"]):
-                            cat = "Movilidad"
-                        elif any(w in low for w in ["luz", "poste", "luminaria", "lámpara"]):
-                            cat = "Alumbrado Público"
-                        elif any(w in low for w in ["seguridad", "robo", "atraco", "policía"]):
-                            cat = "Seguridad"
-
-                        triage_items.append({
-                            "id": f"COMM-{c_id[-6:]}",
-                            "source": p.source or "Facebook",
-                            "author": c_author if c_author.startswith("@") else f"@{c_author.lower().replace(' ', '.')}",
-                            "postTitle": p.title[:65] + "...",
-                            "content": c_text,
-                            "detectedIntent": "Reporte ciudadano",
-                            "detectedLocation": "Neiva (General)",
-                            "referenceStreet": "Sector Monitoreado",
-                            "detectedCategory": cat,
-                            "detectedTopic": f"Gestión de {cat}",
-                            "detectedProblem": c_text[:60] + "...",
-                            "aiConfidence": 92,
-                            "requiresFollowup": True,
-                            "possibleCaseMatch": None,
-                            "metaDirectContactAllowed": True,
-                            "dateTime": c.get("published_at") or p.published_at or "Reciente",
-                        })
-                        if len(triage_items) >= 12:
-                            break
-            except Exception:
-                pass
-        if len(triage_items) >= 12:
-            break
-
-    return triage_items
+def get_triage_comments(db: Session = Depends(get_db), user=Depends(require_triage_user)):
+    from app.services.triage import pending_comments
+    return pending_comments(db)

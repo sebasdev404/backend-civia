@@ -9,7 +9,7 @@ import urllib.request
 GRAPH_ROOT = "https://graph.facebook.com/v21.0/"
 COMMENT_FIELDS = (
     "id,message,from{id,name,picture.width(80).height(80){url,is_silhouette}},"
-    "created_time,parent,is_hidden,comment_count,permalink_url"
+    "created_time,parent,is_hidden,comment_count,like_count,permalink_url"
 )
 PROTECTED_FACEBOOK_AUTHOR = "Usuario de Facebook (🔒 Perfil Protegido por Meta)"
 
@@ -106,7 +106,7 @@ def video_nodes(post):
     return nodes
 
 
-def read_comments(node, token, initial=None):
+def read_comments(node, token, initial=None, progress=None):
     rows = {}
     total = 0
     for page in iter_connection(
@@ -117,16 +117,18 @@ def read_comments(node, token, initial=None):
         for comment in page.get("data", []):
             if comment.get("id"):
                 rows[comment["id"]] = comment
+        if progress:
+            progress(captured=len(rows), total=max(total, len(rows)))
     return list(rows.values()), max(total, len(rows))
 
 
-def read_post_comments(post, token):
-    comments, total = read_comments(post["id"], token, initial=post.get("comments"))
+def read_post_comments(post, token, progress=None):
+    comments, total = read_comments(post["id"], token, initial=post.get("comments"), progress=progress)
     rows = {comment["id"]: comment for comment in comments}
     for node in video_nodes(post):
         if node == post["id"]:
             continue
-        video_comments, video_total = read_comments(node, token)
+        video_comments, video_total = read_comments(node, token, progress=progress)
         total = max(total, video_total)
         for comment in video_comments:
             rows[comment["id"]] = comment

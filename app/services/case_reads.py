@@ -1,14 +1,18 @@
 """Bounded case summaries with exact source-post references; no external I/O."""
 from sqlalchemy import desc, func, or_
+from urllib.parse import urlencode
 
 from app.models.case import Case
 from app.models.meta_post import MetaPost
+from app.models.case_provenance import CaseProvenanceReview
 from app.services.post_images import post_image_urls
 
 
 def filtered_cases(db, *, search=None, priority=None, category=None, source=None, status=None,
-                   department=None, priority_only=False):
+                   department=None, priority_only=False, provenance="all"):
     query = db.query(Case)
+    if provenance != "all":
+        query = query.filter(Case.id.in_(db.query(CaseProvenanceReview.case_id).filter(CaseProvenanceReview.status == provenance)))
     for column, value in ((Case.priority, priority), (Case.category, category),
                           (Case.source, source), (Case.status, status)):
         if value and value != "all":
@@ -29,6 +33,7 @@ def list_case_summaries(db, *, limit=24, offset=0, asset_base="http://127.0.0.1:
     query = filtered_cases(db, **filters)
     total = query.with_entities(func.count(Case.id)).scalar() or 0
     reference = func.btrim(func.substring(Case.internal_notes, r"(?m)^\[Post ID\]:[ \t]*([^\r\n]+)"), " \t")
+    comment_reference = func.btrim(func.substring(Case.internal_notes, r"(?m)^\[Comment ID\]:[ \t]*([^\r\n]+)"), " \t")
     rows = query.with_entities(*[getattr(Case, field) for field in (
         "id", "source", "author", "priority", "title", "category", "sentiment", "location",
         "date_time", "status", "media_type", "image_url", "institutional_radicado",
@@ -37,7 +42,12 @@ def list_case_summaries(db, *, limit=24, offset=0, asset_base="http://127.0.0.1:
     )], func.left(Case.content, 600).label("content"), reference.label("post_id"),
         MetaPost.cover_image.label("post_cover"), MetaPost.id.label("matched_post_id"),
         MetaPost.media_type.label("post_media_type"), MetaPost.title.label("post_title"),
-    ).outerjoin(MetaPost, MetaPost.id == reference).order_by(desc(Case.created_at), desc(Case.id)).offset(offset).limit(limit).all()
+        func.left(MetaPost.message, 600).label("post_message"), MetaPost.permalink_url.label("post_permalink_url"),
+        comment_reference.label("comment_id"),
+        CaseProvenanceReview.status.label("provenance_status"), CaseProvenanceReview.reason.label("provenance_reason"),
+    ).outerjoin(MetaPost, MetaPost.id == reference).outerjoin(
+        CaseProvenanceReview, CaseProvenanceReview.case_id == Case.id
+    ).order_by(desc(Case.created_at), desc(Case.id)).offset(offset).limit(limit).all()
     items = []
     for row in rows:
         item = dict(row._mapping)
@@ -51,6 +61,10 @@ def list_case_summaries(db, *, limit=24, offset=0, asset_base="http://127.0.0.1:
         item["thumbnail_url"] = thumbnail
         item["media_type"] = item.pop("post_media_type") or item["media_type"]
         item["media_available"] = bool(cover)
+        item["source_status"] = "post_available" if item["post_title"] else "post_missing" if pid else "reference_missing"
+        item["comment_url"] = None
+        if item["post_permalink_url"] and item["comment_id"] and "facebook" in item["source"].lower():
+            item["comment_url"] = item["post_permalink_url"] + ("&" if "?" in item["post_permalink_url"] else "?") + urlencode({"comment_id": item["comment_id"].rsplit("_", 1)[-1]})
         items.append(item)
     return {"items": items, "total": total, "limit": limit, "offset": offset,
             "has_more": offset + len(items) < total}

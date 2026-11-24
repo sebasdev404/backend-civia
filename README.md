@@ -1,6 +1,44 @@
+> **Documento central del proyecto:** [Estructura, lógica de negocio, limitaciones y pendientes](docs/PROYECTO_CIVIA.md), revisado el 24/11/2026.
+>
+> Este README contiene también instrucciones heredadas de demostración. Las referencias a una plataforma oficial, cuentas demo o carga de datos semilla no describen una configuración de producción aprobada. Consultar el documento central antes de instalar o desplegar.
+
 # 🧠 CIVIA - Backend (Motor de Inteligencia Artificial y Gestión de Casos)
 
 API RESTful de alto rendimiento para el sistema CIVIA de la Alcaldía de Neiva, desarrollada con **Python 3.10+**, **FastAPI**, **SQLAlchemy ORM**, **PostgreSQL** e integración con **OpenAI (GPT-4o-mini)** y **Meta Graph API (Facebook / Instagram)**.
+
+## Publicaciones, actualización en segundo plano y fuentes externas
+
+El apartado **Publicaciones** (`/publications`) permite consultar las capturas por fuente y abrir sus comentarios paginados, métricas e identidades disponibles de reacciones. Incluye las redes conectadas de Johan y la fuente aportada **Jorge Andrés Gechem** (`https://www.facebook.com/JorgeAndresGA`). Las capturas externas se guardan en `observed_posts`, separadas de los casos y del análisis de opinión sobre Johan. Registrar un enlace no concede acceso: un rechazo de Meta queda visible, con código y estado, sin contenido de ejemplo ni ceros inventados.
+
+`POST /api/v1/meta/sync-live` responde **202** con un trabajo. `GET /api/v1/meta/sync-jobs/{id}` consulta su avance y resultado; `/api/v1/meta/sync-status?scope=connected` permite recuperar el último trabajo tras navegar. Los botones manuales y la tarea automática comparten una exclusión por fuente para evitar duplicar la misma captura. La ejecución normal consulta hasta **12 publicaciones recientes por red**, guarda primero los metadatos de Facebook y después sus comentarios y métricas. No espera descargas de portadas ni clasificación de cada comentario con IA. El análisis contextual se pone en una cola separada cuando termina la captura. Los scripts históricos mantienen sus opciones anteriores.
+
+Los nombres visibles se conservan tal como los entrega Meta y pueden exportarse con los comentarios capturados a CSV. No son identidades verificadas. Las identidades de reacciones pueden ser parciales o estar restringidas aunque haya un conteo disponible. Las señales de repetición/frecuencia sirven para revisión; no confirman bots, personas reales, granjas ni afinidad política. El endpoint antiguo de detección devuelve estado indeterminado cuando no hay evidencia y no calcula probabilidades a partir de críticas o datos ausentes.
+
+Las tablas nuevas se crean al arrancar; también existe `migrations/20261113_publications_sync_jobs.sql`. Un reinicio marca los trabajos pendientes previos como interrumpidos y permite reintentarlos. La coordinación actual está diseñada para el servidor local de un solo proceso.
+
+## Opinión sobre Johan y contexto de publicaciones
+
+El sidebar incluye **Opinión sobre Johan** (`/opinion`, con redirección desde `/conversation`). Consulta todos los comentarios capturados de Facebook, incluidas respuestas con su comentario padre cuando esté disponible. Distingue emoción, postura frente a Johan, destinatario, tema y motivo. Una denuncia de la ciudad no implica crítica a Johan; el enojo que respalda su denuncia se cuenta como apoyo.
+
+Para videos, selecciona la publicación y guarda un resumen o una transcripción del contenido hablado. Actualmente no se descarga ni escucha el video automáticamente. La descripción y la portada por sí solas no se consideran contexto suficiente para un video. Para publicaciones de texto/imagen se utiliza el texto de la publicación. El origen del contexto queda visible en cada análisis.
+
+**Analizar pendientes (20)** procesa hasta 20 comentarios del período/publicación seleccionados. La sincronización de Facebook también procesa hasta 20 pendientes por ciclo. Las clasificaciones quedan en tablas independientes de las capturas de Meta y se reutilizan; si cambia el contexto, el comentario, su padre o la versión del clasificador, vuelven a estar pendientes. Los comentarios ya analizados con ambigüedad permanecen en revisión hasta contar con un contexto que la resuelva. Los resultados con baja confianza, ambiguos o sin contexto no se suman como apoyos ni críticas. Las cifras de Meta pueden diferir de los comentarios capturados por respuestas, restricciones y disponibilidad.
+
+Las tablas `post_contexts` y `comment_analyses` se crean al iniciar el backend; también se incluye `migrations/20261113_contextual_conversation.sql` para despliegues con migración explícita. Reinicia backend y frontend tras actualizar. Los endpoints `/api/v1/conversation` requieren sesión y no hacen publicaciones ni envían respuestas a Facebook.
+
+Validación aislada (sin llamadas de pago ni escritura en datos reales):
+
+```bash
+python -m unittest discover -s tests -p test_conversation.py -v
+```
+
+Evaluación opcional con cuatro ejemplos sintéticos contra el proveedor de IA configurado (consume una llamada):
+
+```bash
+python tests/eval_conversation_live.py
+```
+
+La confianza del modelo es orientativa; no garantiza exactitud ni representa una afinidad política del autor. La vista Análisis conserva métricas de emoción de casos, diferenciadas de la postura contextual que muestra Conversación Facebook.
 
 ---
 
@@ -98,4 +136,3 @@ uvicorn main:app --port 8000 --reload
   - `GET /webhook` / `POST /webhook`: Escucha de eventos en vivo desde Meta Webhooks.
 - **Servicio de Inteligencia Artificial (`/api/v1/ai`):**
   - `POST /classify`: Clasificación semántica de comentarios y PQR con detección de sentimiento y prioridad automática.
-

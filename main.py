@@ -25,12 +25,11 @@ async def periodic_meta_sync_loop():
     await asyncio.sleep(20)
     while True:
         try:
-            from sync_live_service import sync_facebook_live_posts, sync_instagram_publications
+            from app.services.meta_sync_jobs import start_job
             db = SessionLocal()
             try:
-                # Sincronizar en un hilo para no bloquear el bucle de eventos asíncrono
-                await asyncio.to_thread(sync_instagram_publications, db, max_posts=50)
-                await asyncio.to_thread(sync_facebook_live_posts, db, max_posts=50)
+                # Comparte el mismo trabajo que el botón manual; no duplica la captura.
+                await asyncio.to_thread(start_job, db, "connected")
             finally:
                 db.close()
         except asyncio.CancelledError:
@@ -43,6 +42,11 @@ async def periodic_meta_sync_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from app.services.publications import ensure_sources
+    from app.services.meta_sync_jobs import recover_jobs
+    with SessionLocal() as db:
+        recover_jobs(db)
+        ensure_sources(db)
     # Iniciar auto-sync en segundo plano
     sync_task = asyncio.create_task(periodic_meta_sync_loop())
     yield

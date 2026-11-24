@@ -6,6 +6,7 @@ from typing import List, Optional
 from app.core.database import get_db
 from app.models.incident import Incident
 from app.schemas.incident import IncidentCreate, IncidentResponse
+from app.services.map_evidence import audit_incidents
 
 router = APIRouter(prefix="/map", tags=["Mapa Termómetro Ciudadano"])
 
@@ -43,7 +44,14 @@ def get_map_incidents(
             )
         )
 
-    return query.order_by(desc(Incident.created_at)).all()
+    items, _ = audit_incidents(db, query.order_by(desc(Incident.created_at)).all())
+    return items
+
+
+@router.get("/audit")
+def get_map_audit(db: Session = Depends(get_db)):
+    _, summary = audit_incidents(db, db.query(Incident).all())
+    return summary
 
 @router.post("/incidents", response_model=IncidentResponse, status_code=status.HTTP_201_CREATED)
 def create_map_incident(incident_in: IncidentCreate, db: Session = Depends(get_db)):

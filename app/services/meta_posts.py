@@ -8,7 +8,9 @@ from sqlalchemy.exc import DataError
 from sqlalchemy.orm import defer
 
 from app.models.case import Case
+from app.models.case_comment import CaseComment
 from app.models.meta_post import MetaPost
+from app.models.publication import PublicationSnapshot
 from app.services.post_images import post_image_urls
 
 
@@ -44,6 +46,7 @@ def list_posts(db, *, month=None, search=None, network=None, limit=24, offset=0,
         query = query.filter(MetaPost.source.ilike(f"%{network}%"))
     if cases_only:
         query = query.filter(or_(
+            MetaPost.id.in_(db.query(CaseComment.post_id)),
             MetaPost.id.in_(db.query(reference).filter(reference.is_not(None))),
             func.split_part(MetaPost.cover_image, "?", 1).in_(db.query(image_key).filter(reference.is_(None), Case.image_url.is_not(None))),
         ))
@@ -65,10 +68,18 @@ def list_posts(db, *, month=None, search=None, network=None, limit=24, offset=0,
                 key = reference_id or (case.image_url.split("?")[0] if case.image_url else None)
                 if key:
                     associated.setdefault(key, []).append(item)
+            for link, case in db.query(CaseComment, Case).join(Case, Case.id == CaseComment.case_id).filter(CaseComment.post_id.in_(ids)):
+                if not any(item["id"] == case.id for item in associated.get(link.post_id, [])):
+                    _, item = _case_item(case)
+                    item["comment_id"] = link.comment_id
+                    associated.setdefault(link.post_id, []).append(item)
             counts = {key: len(items) for key, items in associated.items()}
         else:
             key = func.coalesce(reference, image_key)
-            counts = dict(db.query(key, func.count(Case.id)).filter(condition).group_by(key).all())
+            pairs = db.query(key.label("key"), Case.id.label("case_id")).filter(condition).union(
+                db.query(CaseComment.post_id, CaseComment.case_id).filter(CaseComment.post_id.in_(ids))
+            ).subquery()
+            counts = dict(db.query(pairs.c.key, func.count()).group_by(pairs.c.key).all())
             # PostgreSQL devuelve solo el conteo, sin transferir los comentarios al proceso web.
             raw_count = sql_case(
                 (or_(MetaPost.raw_comments_json.is_(None), MetaPost.raw_comments_json == ""), 0),
@@ -86,6 +97,9 @@ def list_posts(db, *, month=None, search=None, network=None, limit=24, offset=0,
                     except (ValueError, TypeError):
                         raw_counts[identity] = 0
 
+    snapshots = {row.post_id: row for row in db.query(PublicationSnapshot).filter(
+        PublicationSnapshot.post_id.in_([post.id for post in posts])
+    ).all()} if posts else {}
     results = []
     for post in posts:
         key = post.id
@@ -99,8 +113,7 @@ def list_posts(db, *, month=None, search=None, network=None, limit=24, offset=0,
             "cover_image": cover, "thumbnail_url": thumbnail, "media_type": post.media_type,
             "published_at": post.published_at, "month_key": post.month_key, "permalink_url": post.permalink_url,
             "total_comments": max(post.total_comments or 0, matched_count, raw_counts.get(post.id, 0)), "cases_count": matched_count,
-            "likes_count": post.likes_count or 0, "views_count": post.views_count or 0,
-            "shares_count": post.shares_count or 0,
+            **post_metric_values(post, snapshots.get(post.id)),
         }
         if include_details:
             try:
@@ -109,6 +122,9 @@ def list_posts(db, *, month=None, search=None, network=None, limit=24, offset=0,
             except (ValueError, TypeError):
                 raw = []
             by_id = {comment.get("id"): comment for comment in raw if isinstance(comment, dict)}
+            for link in db.query(CaseComment).filter(CaseComment.post_id == post.id):
+                if link.comment_id in by_id:
+                    by_id[link.comment_id]["case_id"] = link.case_id
             matched = [dict(case) for case in associated.get(key, [])]
             for case in matched:
                 comment = by_id.get(case.get("comment_id"))
@@ -123,3 +139,22 @@ def list_posts(db, *, month=None, search=None, network=None, limit=24, offset=0,
         results.append(item)
     return {"items": results, "total": total, "cases_total": cases_total, "limit": limit,
             "offset": offset, "has_more": offset + len(results) < total}
+
+
+def post_metric_values(post, snapshot):
+    """Use captured counts, preserving confirmed zeros and unknown legacy values."""
+    try:
+        views = json.loads(getattr(snapshot, 'reactions_json', None) or '{}').get('views', {})
+    except (ValueError, TypeError):
+        views = {}
+    return {
+        "likes_count": snapshot.likes_count if snapshot else (post.likes_count or None),
+        "reactions_count": snapshot.reactions_count if snapshot else None,
+        "views_count": views.get('count', post.views_count or None),
+        "views_status": views.get('status', 'historical' if post.views_count else 'not_checked'),
+        "views_detail": views.get('detail', 'Vistas de contenido; no equivalen a alcance ni a reproducciones de tres segundos.' if views.get('metric') else 'No hay captura verificada de vistas; los valores históricos están pendientes de validar.'),
+        "shares_count": snapshot.shares_count if snapshot else (post.shares_count or None),
+        "metrics_status": snapshot.status if snapshot else "not_checked",
+        "metrics_updated_at": snapshot.updated_at if snapshot else None,
+        "metrics_detail": snapshot.detail if snapshot else "Métricas pendientes de consulta; un guion indica un dato no disponible.",
+    }
