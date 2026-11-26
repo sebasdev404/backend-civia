@@ -1,18 +1,35 @@
 """Bounded case summaries with exact source-post references; no external I/O."""
-from sqlalchemy import desc, func, or_
+from sqlalchemy import desc, func, or_, select, case as sql_case
 from urllib.parse import urlencode
 
 from app.models.case import Case
 from app.models.meta_post import MetaPost
 from app.models.case_provenance import CaseProvenanceReview
+from app.models.case_consolidation import CaseConsolidation
 from app.services.post_images import post_image_urls
 
 
+def duplicate_target():
+    return select(CaseConsolidation.primary_case_id).where(
+        CaseConsolidation.duplicate_case_id == Case.id, CaseConsolidation.undone_at.is_(None)
+    ).correlate(Case).scalar_subquery()
+
+
+def has_active_consolidation():
+    return select(CaseConsolidation.id).where(CaseConsolidation.undone_at.is_(None), or_(
+        CaseConsolidation.primary_case_id == Case.id, CaseConsolidation.duplicate_case_id == Case.id
+    )).correlate(Case).exists()
+
+
 def filtered_cases(db, *, search=None, priority=None, category=None, source=None, status=None,
-                   department=None, priority_only=False, provenance="all"):
+                   department=None, priority_only=False, provenance="all", include_duplicates=False):
     query = db.query(Case)
+    if not include_duplicates:
+        query = query.filter(duplicate_target().is_(None))
     if provenance != "all":
         query = query.filter(Case.id.in_(db.query(CaseProvenanceReview.case_id).filter(CaseProvenanceReview.status == provenance)))
+        if provenance == "needs_review":
+            query = query.filter(~has_active_consolidation())
     for column, value in ((Case.priority, priority), (Case.category, category),
                           (Case.source, source), (Case.status, status)):
         if value and value != "all":
@@ -44,7 +61,10 @@ def list_case_summaries(db, *, limit=24, offset=0, asset_base="http://127.0.0.1:
         MetaPost.media_type.label("post_media_type"), MetaPost.title.label("post_title"),
         func.left(MetaPost.message, 600).label("post_message"), MetaPost.permalink_url.label("post_permalink_url"),
         comment_reference.label("comment_id"),
-        CaseProvenanceReview.status.label("provenance_status"), CaseProvenanceReview.reason.label("provenance_reason"),
+        sql_case((has_active_consolidation() & (CaseProvenanceReview.status == "needs_review"), "consolidated"),
+                 else_=CaseProvenanceReview.status).label("provenance_status"), CaseProvenanceReview.reason.label("provenance_reason"),
+        CaseProvenanceReview.evidence_json["conflict_review"].label("provenance_conflict"),
+        duplicate_target().label("duplicate_of"),
     ).outerjoin(MetaPost, MetaPost.id == reference).outerjoin(
         CaseProvenanceReview, CaseProvenanceReview.case_id == Case.id
     ).order_by(desc(Case.created_at), desc(Case.id)).offset(offset).limit(limit).all()

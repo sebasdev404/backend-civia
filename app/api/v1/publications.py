@@ -1,3 +1,4 @@
+from app.core.assets import asset_base
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 import csv
 from io import StringIO
@@ -33,7 +34,7 @@ def list_posts(request: Request, source_id: str = "johan", search: str | None = 
                offset: int = Query(0, ge=0), db: Session = Depends(get_db)):
     require_source(db, source_id)
     return publications.list_publications(db, source_id=source_id, search=search, network=network, limit=limit, offset=offset,
-                                         asset_base=str(request.base_url).rstrip("/"))
+                                         asset_base=asset_base(request))
 
 
 @router.get("/{source_id}/{post_id}")
@@ -42,7 +43,7 @@ def detail(source_id: str, post_id: str, request: Request, offset: int = Query(0
            db: Session = Depends(get_db)):
     require_source(db, source_id)
     result = publications.publication_detail(db, source_id, post_id, offset=offset, limit=limit,
-                reactions_offset=reactions_offset, search=search, signals_only=signals_only, asset_base=str(request.base_url).rstrip("/"))
+                reactions_offset=reactions_offset, search=search, signals_only=signals_only, asset_base=asset_base(request))
     if result is None:
         raise HTTPException(404, "Publicación no encontrada para esta fuente")
     return result

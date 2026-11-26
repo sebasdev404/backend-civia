@@ -510,13 +510,8 @@ def sync_instagram_publications(db, stats=None, max_posts=3000, only_missing=Fal
     return new_posts
 
 def generate_fallback_covers():
-    """Genera portadas fotográficas profesionales para publicaciones."""
-    try:
-        from update_covers import THEMES, process_cover
-        for theme in THEMES:
-            process_cover(theme)
-    except Exception as e:
-        print(f"Error generando portadas temáticas: {e}", flush=True)
+    raise RuntimeError('Las portadas genericas estan deshabilitadas. Conserva solo imagenes de origen.')
+
 
 def run_full_sync():
     print("==================================================", flush=True)

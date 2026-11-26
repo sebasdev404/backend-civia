@@ -1,5 +1,8 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from app.api.access import require_api_access
 from app.api.v1.triage import router as triage_router
+from app.api.v1.case_consolidations import router as case_consolidations_router
+from app.api.v1.case_corrections import router as case_corrections_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.cases import router as cases_router
 from app.api.v1.incidents import router as map_router
@@ -12,8 +15,10 @@ from app.api.v1.citizens import router as citizens_router
 from app.api.v1.conversation import router as conversation_router
 from app.api.v1.publications import router as publications_router
 
-api_v1_router = APIRouter()
+api_v1_router = APIRouter(dependencies=[Depends(require_api_access)])
 api_v1_router.include_router(triage_router)
+api_v1_router.include_router(case_consolidations_router)
+api_v1_router.include_router(case_corrections_router)
 
 api_v1_router.include_router(auth_router)
 api_v1_router.include_router(cases_router)

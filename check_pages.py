@@ -1,23 +1,19 @@
-import urllib.request
-import json
+"""Read-only check of the configured page; credentials stay in private config."""
+from app.core.config import settings
+from app.services.facebook_graph import graph_get,GraphAPIError
 
-tokens = {
-    "Johan Steed (275486829735525)": "EAAdzhZBZCKZCMkBSiWvwHdfloetJMPlcY6ht8sDLGrFYDkSZBarQHSLZBSAn7Q8wqtfhHsWxYHjyZAZCM60mOc4hQCJNKwfYHE5uascmnZASI5FObAQWqQf6IUOHYxJx84sYbppmZC73hNsPPwSe9mYot4ahk3bX08cBSwQbeWveaHkpEkazQVZA0GxnMCZAK51v8JHlRhZBNENtvVPPsxuWaZA5bfXDQfNTU1iAEbTZCpeqgYJvj5jc22XN2wQd7i",
-    "Johan Steed Ortiz Fernandez (322101261805063)": "EAAdzhZBZCKZCMkBSmnhg9p8BWw3uaywFasdygbRDb63dBpcZCpe9OBqOQGp9AbuZAoMOXXNd1e3BFXZAZA0iZC7KEUZCrfhCME1LD4SYMvumjTXuyqeiGQD3KZBSP4CEiupVBqoZBED0WWJZA7NYNt3UGSCbGsDmndHZAwq2JXyenVeM0FZA3F8yP87SdYz4CXfsOQtHtlBLPi0qqkMWslhIY3iZBwsGvl1vvkRUmSFqm2RVdORZCZA2vdONcQAl21HbkDwZDZD"
-}
 
-for name, tok in tokens.items():
-    print(f"=== Testing {name} ===")
-    pid = name.split("(")[1].split(")")[0]
-    url = f"https://graph.facebook.com/v21.0/{pid}/posts?fields=id,message,created_time,full_picture&limit=5&access_token={tok}"
+def check():
+    if not settings.META_PAGE_ACCESS_TOKEN or not settings.META_PAGE_ID:
+        print('Configura Meta en el entorno privado.');return 1
     try:
-        with urllib.request.urlopen(url) as r:
-            res = json.loads(r.read().decode())
-            data = res.get("data", [])
-            print(f"Posts count: {len(data)}")
-            for p in data:
-                msg = p.get('message', 'Sin texto')
-                print(f" - [{p.get('created_time')}]: {msg[:90]}")
-    except urllib.error.HTTPError as e:
-        print("HTTP Error:", e.read().decode())
+        result=graph_get(f'{settings.META_PAGE_ID}/posts',settings.META_PAGE_ACCESS_TOKEN,fields='id',limit=1)
+        print('Lectura autorizada; publicaciones recibidas en esta página:',len(result.get('data',[])))
+        return 0
+    except GraphAPIError as error:
+        print(f'Meta rechazó la consulta: código {error.code}, subcódigo {error.subcode}.');return 1
+    except Exception:
+        print('No se pudo completar la consulta. Revisa conexión y configuración privadas.');return 1
 
+
+if __name__=='__main__':raise SystemExit(check())

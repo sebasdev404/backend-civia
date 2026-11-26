@@ -1,0 +1,87 @@
+name: civia
+services:
+  database:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: civia
+      POSTGRES_USER: civia
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Configure a private database password}
+    volumes: ["postgres-data:/var/lib/postgresql"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U civia -d civia"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+  migrate:
+    image: ${CIVIA_BACKEND_IMAGE:-civia-backend:local}
+    build: {context: ..}
+    env_file: [./production.env]
+    command: ["python", "manage.py", "migrate"]
+    depends_on: {database: {condition: service_healthy}}
+    restart: "no"
+  backend:
+    image: ${CIVIA_BACKEND_IMAGE:-civia-backend:local}
+    build: {context: ..}
+    env_file: [./production.env]
+    environment:
+      BFF_PROXY_SECRET: ${CIVIA_PROXY_SECRET:?Configure a private proxy secret}
+    volumes: ["media-data:/app/static"]
+    depends_on: {migrate: {condition: service_completed_successfully}}
+    restart: unless-stopped
+    init: true
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready',timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging: {driver: json-file, options: {max-size: "10m", max-file: "3"}}
+  frontend:
+    image: ${CIVIA_FRONTEND_IMAGE:-civia-frontend:local}
+    build: {context: ../../frontend-civia}
+    environment:
+      CIVIA_BACKEND_API_URL: http://backend:8000/api/v1
+      CIVIA_PUBLIC_ORIGIN: https://${CIVIA_DOMAIN:?Configure the real domain}
+      CIVIA_PROXY_SECRET: ${CIVIA_PROXY_SECRET:?Configure a private proxy secret}
+      NODE_ENV: production
+    depends_on: {backend: {condition: service_healthy}}
+    restart: unless-stopped
+    init: true
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/login').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging: {driver: json-file, options: {max-size: "10m", max-file: "3"}}
+  gateway:
+    image: caddy:2
+    environment:
+      CIVIA_DOMAIN: ${CIVIA_DOMAIN:?Configure the real domain}
+      ACME_EMAIL: ${ACME_EMAIL:?Configure the TLS contact email}
+      CIVIA_PROXY_SECRET: ${CIVIA_PROXY_SECRET:?Configure a private proxy secret}
+    ports: ["80:80", "443:443"]
+    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro", "caddy-data:/data", "caddy-config:/config"]
+    depends_on: {frontend: {condition: service_healthy}}
+    restart: unless-stopped
+    logging: {driver: json-file, options: {max-size: "10m", max-file: "3"}}
+  backup:
+    profiles: ["ops"]
+    build: {context: .., dockerfile: deploy/Dockerfile.ops}
+    env_file: [./production.env]
+    volumes: ["./backups:/backups", "media-data:/media:ro"]
+    depends_on: {database: {condition: service_healthy}}
+    command: ["backup", "--output", "/backups/civia.enc", "--media-root", "/media"]
+  restore:
+    profiles: ["ops"]
+    build: {context: .., dockerfile: deploy/Dockerfile.ops}
+    env_file: [./production.env]
+    volumes: ["./backups:/backups", "media-data:/media"]
+    depends_on: {database: {condition: service_healthy}}
+    command: ["--help"]
+volumes:
+  postgres-data:
+  media-data:
+  caddy-data:
+  caddy-config:

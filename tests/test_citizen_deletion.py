@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.api.v1.citizens import router
 from app.core.database import engine, get_db
-from app.core.security import create_access_token
+from app.services.auth_sessions import issue_session
 from app.models.citizen import Citizen
 from app.models.case import Case
 from app.models.meta_post import MetaPost
@@ -38,9 +38,11 @@ class CitizenDeletionTests(unittest.TestCase):
             self.transaction.rollback()
         self.connection.close()
 
-    @staticmethod
-    def authorization(user):
-        return {"Authorization": "Bearer " + create_access_token({"sub": user.id})}
+    def authorization(self, user):
+        # This commit releases only the test savepoint; teardown rolls back its outer transaction.
+        token = issue_session(self.db, user)
+        self.db.commit()
+        return {"Authorization": "Bearer " + token}
 
     def bulk(self, ids, headers=None):
         return self.client.post("/api/v1/citizens/bulk-delete", json={"citizen_ids": ids}, headers=self.headers if headers is None else headers)

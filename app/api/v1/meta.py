@@ -1,3 +1,4 @@
+from app.core.assets import asset_base
 import logging
 import os
 import time
@@ -6,6 +7,8 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from typing import Dict, Any, Optional, List
 import json
+import hmac
+import hashlib
 from datetime import datetime, timezone, timedelta
 
 from app.api.dependencies import require_triage_user
@@ -38,7 +41,7 @@ def verify_meta_webhook(
         # Meta exige responder con el challenge en texto plano
         return Response(content=str(hub_challenge), media_type="text/plain", status_code=200)
     
-    logger.warning(f"Fallo de verificación de Webhook. Token recibido: '{hub_verify_token}', esperado: '{expected_token}'")
+    logger.warning('Fallo de verificación de Webhook.')
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="Token de verificación inválido"
@@ -46,71 +49,28 @@ def verify_meta_webhook(
 
 @router.post("/webhook")
 async def receive_meta_webhook(request: Request, db: Session = Depends(get_db)):
-    """
-    Receptor de eventos en vivo de Meta (Facebook Page y cuenta de Instagram).
-    Procesa publicaciones, comentarios y menciones de ciudadanos.
-    """
-    try:
-        payload = await request.json()
-    except Exception as e:
-        logger.error(f"Error parseando JSON de Meta: {e}")
-        return Response(content="INVALID_JSON", status_code=400)
-
-    logger.info(f"Evento recibido de Meta: {json.dumps(payload)[:300]}")
-
-    # Estructura típica de Meta Webhook para Páginas e Instagram
-    # entry -> changes -> value -> message / comment_id
-    if payload.get("object") in ["page", "instagram"]:
-        entries = payload.get("entry", [])
-        for entry in entries:
-            changes = entry.get("changes", [])
-            for change in changes:
-                value = change.get("value", {})
-                message_text = value.get("message") or value.get("text")
-                author_name = value.get("from", {}).get("name", "Ciudadano en Redes")
-                network = "Facebook" if payload.get("object") == "page" else "Instagram"
-
-                if message_text and len(message_text.strip()) > 5:
-                    logger.info(f"Procesando comentario ciudadano con OpenAI: '{message_text}'")
-                    try:
-                        # 1. Clasificación automática con IA (OpenAI gpt-4o-mini)
-                        from app.models.conversation import PostContext
-                        from app.services.conversation import context_for
-                        post = db.get(MetaPost, value.get("post_id")) if value.get("post_id") else None
-                        context = json.dumps(context_for(post, db.get(PostContext, post.id)), ensure_ascii=False) if post else None
-                        ai_analysis = ai_classifier.classify_comment(message_text, post_context=context)
-
-                        # 2. Generar código interno CIVIA
-                        count = db.query(Case).count()
-                        case_id = f"CIV-2026-{str(count + 1).zfill(4)}"
-
-                        # 3. Guardar en base de datos PostgreSQL
-                        new_case = Case(
-                            id=case_id,
-                            title=f"{ai_analysis.get('category')}: {ai_analysis.get('detected_problem', message_text[:60])}",
-                            content=message_text,
-                            category=ai_analysis.get("category", "General"),
-                            sentiment=ai_analysis.get("sentiment", "Crítico"),
-                            priority=ai_analysis.get("priority_suggestion", "Media"),
-                            status="Pendiente",
-                            location=f"{ai_analysis.get('neighborhood', 'Neiva')} ({ai_analysis.get('commune', 'Comuna General')})",
-                            zone=ai_analysis.get("commune", "Comuna General"),
-                            date_time="Hace un momento",
-                            source=network,
-                            author=author_name,
-                            assigned_department=ai_analysis.get("assigned_department_suggestion", "Despacho Municipal"),
-                            requires_followup=ai_analysis.get("requires_followup", True),
-                            comments_count=1,
-                        )
-                        db.add(new_case)
-                        db.commit()
-                        logger.info(f"Nuevo caso creado automáticamente: {case_id}")
-                    except Exception as err:
-                        logger.error(f"Error procesando comentario con IA: {err}")
-                        db.rollback()
-
-    # Meta exige respuesta 200 OK inmediata
-    return {"status": "EVENT_RECEIVED"}
+    if not settings.META_APP_SECRET:
+        raise HTTPException(503, 'La recepci\u00f3n de eventos no est\u00e1 configurada.')
+    chunks=[];size=0
+    async for chunk in request.stream():
+        size+=len(chunk)
+        if size>512*1024:raise HTTPException(413,'Evento demasiado grande.')
+        chunks.append(chunk)
+    body=b''.join(chunks)
+    signature=request.headers.get('x-hub-signature-256','')
+    expected='sha256='+hmac.new(settings.META_APP_SECRET.encode(),body,hashlib.sha256).hexdigest()
+    import re
+    if not re.fullmatch(r'sha256=[0-9a-f]{64}',signature) or not hmac.compare_digest(expected,signature):
+        raise HTTPException(403,'Firma de evento inv\u00e1lida.')
+    try:payload=json.loads(body)
+    except (ValueError,UnicodeError):raise HTTPException(400,'JSON no v\u00e1lido.')
+    if not isinstance(payload,dict) or not isinstance(payload.get('entry',[]),list):
+        raise HTTPException(400,'Estructura de evento no v\u00e1lida.')
+    from app.core.auth_limits import _consume
+    from app.services.webhooks import enqueue
+    _consume(db,'webhook:verified','meta',1000,60)
+    enqueue(db,payload)
+    return {'status':'EVENT_RECEIVED'}
 
 @router.post("/simulate-comment")
 def simulate_incoming_meta_comment(
@@ -252,7 +212,7 @@ def get_monitored_posts(
     from app.services.meta_posts import list_posts
     page = list_posts(
         db, month=month, search=search, network=network, limit=limit, offset=offset,
-        include_details=include_details, cases_only=cases_only, asset_base=str(request.base_url).rstrip("/"),
+        include_details=include_details, cases_only=cases_only, asset_base=asset_base(request),
     )
     return page if paginated else page["items"]
 
@@ -261,7 +221,7 @@ def get_monitored_posts(
 def get_monitored_post(post_id: str, request: Request, db: Session = Depends(get_db)):
     from app.services.meta_posts import list_posts
     page = list_posts(db, post_id=post_id, limit=1, include_details=True,
-                      asset_base=str(request.base_url).rstrip("/"))
+                      asset_base=asset_base(request))
     if not page["items"]:
         raise HTTPException(status_code=404, detail="Publicacion no encontrada")
     item = page["items"][0]

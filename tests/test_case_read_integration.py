@@ -12,6 +12,7 @@ from app.core.database import SessionLocal, get_db
 from app.models.case import Case
 from app.models.meta_post import MetaPost
 from app.models.case_provenance import CaseProvenanceReview
+from app.models.case_consolidation import CaseConsolidation
 from app.services.post_images import real_image_url
 
 
@@ -35,10 +36,17 @@ class CaseReadIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         return response.json()
 
+    def active_duplicates(self):
+        return {row.duplicate_case_id for row in self.db.query(CaseConsolidation).filter_by(undone_at=None)}
+
+    def active_members(self):
+        return {key for row in self.db.query(CaseConsolidation).filter_by(undone_at=None)
+                for key in (row.primary_case_id, row.duplicate_case_id)}
+
     def test_stable_pagination_and_real_total(self):
         first = self.page()
         second = self.page(skip=24)
-        ordered = self.db.query(Case).order_by(desc(Case.created_at), desc(Case.id))
+        ordered = self.db.query(Case).filter(~Case.id.in_(self.active_duplicates())).order_by(desc(Case.created_at), desc(Case.id))
         self.assertEqual(first["total"], ordered.count())
         self.assertEqual([c["id"] for c in first["items"]], [c.id for c in ordered.limit(24)])
         self.assertEqual([c["id"] for c in second["items"]], [c.id for c in ordered.offset(24).limit(24)])
@@ -63,7 +71,7 @@ class CaseReadIntegrationTests(unittest.TestCase):
         self.assertLessEqual(len(self.page(limit=1000)["items"]), 100)
 
     def test_database_search_filters_beyond_first_page(self):
-        case = self.db.query(Case).order_by(Case.created_at, Case.id).first()
+        case = self.db.query(Case).filter(~Case.id.in_(self.active_duplicates())).order_by(Case.created_at, Case.id).first()
         if not case:
             self.skipTest("No hay casos sincronizados")
         result = self.page(search=case.id, priority=case.priority, category=case.category,
@@ -73,7 +81,7 @@ class CaseReadIntegrationTests(unittest.TestCase):
             self.assertIn(case.id, [c["id"] for c in self.page(search=case.id, department=case.assigned_department)["items"]])
         priority_only = self.page(priority_only=True)
         self.assertTrue(all(c["priority_action"] for c in priority_only["items"]))
-        self.assertEqual(priority_only["total"], self.db.query(Case).filter(Case.priority_action.is_(True)).count())
+        self.assertEqual(priority_only["total"], self.db.query(Case).filter(Case.priority_action.is_(True), ~Case.id.in_(self.active_duplicates())).count())
 
     def test_generic_covers_never_return_as_source_images(self):
         for offset in range(0, self.db.query(Case).count(), 100):
@@ -134,7 +142,8 @@ class CaseReadIntegrationTests(unittest.TestCase):
     def test_provenance_filter_and_warnings_match_saved_audit(self):
         for status in ("needs_review", "recovered_local"):
             result = self.page(provenance=status)
-            expected = self.db.query(CaseProvenanceReview).filter_by(status=status).count()
+            excluded = self.active_members() if status == "needs_review" else self.active_duplicates()
+            expected = self.db.query(CaseProvenanceReview).filter(CaseProvenanceReview.status == status, ~CaseProvenanceReview.case_id.in_(excluded)).count()
             self.assertEqual(result["total"], expected)
             self.assertTrue(all(item["provenance_status"] == status for item in result["items"]))
             for item in result["items"][:1]:
@@ -142,6 +151,21 @@ class CaseReadIntegrationTests(unittest.TestCase):
                 self.assertEqual(detail["provenance_status"], status)
                 self.assertEqual(detail["provenance_reason"], item["provenance_reason"])
         self.assertEqual(self.client.get("/api/v1/cases?provenance=not-a-status").status_code, 422)
+
+    def test_conflict_comparison_is_available_in_summary_and_detail(self):
+        reviews = self.db.query(CaseProvenanceReview).filter_by(reason="comment_linked_to_other_case").all()
+        reviewed = [row for row in reviews if (row.evidence_json or {}).get("conflict_review")]
+        if not reviewed:
+            self.skipTest("No hay comparaciones guardadas en esta base")
+        for review in reviewed[:3]:
+            expected = review.evidence_json["conflict_review"]
+            summary = next(item for item in self.page(search=review.case_id, include_duplicates=True)["items"] if item["id"] == review.case_id)
+            detail = self.client.get("/api/v1/cases/" + review.case_id).json()
+            self.assertEqual(summary["provenance_conflict"], expected)
+            self.assertEqual(detail["provenance_conflict"], expected)
+            self.assertEqual(detail["provenance_status"], "consolidated" if review.case_id in self.active_members() else "needs_review")
+            for related_id in expected["related_case_ids"]:
+                self.assertEqual(self.client.get("/api/v1/cases/" + related_id).status_code, 200)
 
 
 if __name__ == "__main__":

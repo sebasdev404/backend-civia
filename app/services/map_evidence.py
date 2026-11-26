@@ -58,6 +58,7 @@ def audit_incidents(db, incidents):
             continue
         item = {c.name: getattr(incident, c.name) for c in incident.__table__.columns}
         item.update(lat=lat, lng=lng, status=cases[incident.id].status, location_precision='area_reference', evidence_text=keyword,
+                    source_post_id=reference[0], source_comment_id=reference[1],
                     verification_status='territorial_mention', source_url=captured.get('permalink_url') or posts[reference[0]].permalink_url,
                     description=(captured.get('content') or captured.get('message') or '') + '\n\nUbicación aproximada por mención textual. No confirma un incidente ni una dirección exacta.')
         items.append(item)

@@ -10,33 +10,34 @@ from app.models.case import Case
 from app.models.meta_post import MetaPost
 from app.models.incident import Incident
 from app.services.map_evidence import audit_incidents, location_evidence
+from app.services.case_workflow import revision
 from app.api.v1.cases import dispatch_case, resolve_case
 from app.schemas.case import CaseDispatch, CaseResolve
 
 
 class WorkflowTests(unittest.TestCase):
     def test_no_close_without_assignment(self):
-        item = SimpleNamespace(assigned_department=None, assigned_to=None)
-        with patch('app.api.v1.cases.find_case_or_fallback', return_value=item):
+        item = SimpleNamespace(status='Pendiente', assigned_department=None, assigned_to=None)
+        with patch('app.api.v1.cases.writable_case', return_value=item):
             with self.assertRaises(HTTPException) as error:
                 resolve_case('test', CaseResolve(resolution_note='Solución con soporte de visita', resolved_by='Operador'), MagicMock())
         self.assertEqual(error.exception.status_code, 409)
 
     def test_closed_cases_cannot_be_dispatched(self):
-        with patch('app.api.v1.cases.find_case_or_fallback', return_value=SimpleNamespace(status='Resuelto')):
+        with patch('app.api.v1.cases.writable_case', return_value=SimpleNamespace(status='Resuelto')):
             with self.assertRaises(HTTPException):
                 dispatch_case('test', CaseDispatch(assigned_department='Equipo', assigned_to='Ana'), MagicMock())
 
     def test_dispatch_requires_named_owner(self):
-        with patch('app.api.v1.cases.find_case_or_fallback', return_value=SimpleNamespace(status='Pendiente')):
+        with patch('app.api.v1.cases.writable_case', return_value=SimpleNamespace(status='Pendiente')):
             with self.assertRaises(HTTPException):
                 dispatch_case('test', CaseDispatch(assigned_department='Equipo'), MagicMock())
 
     def test_dispatch_always_records_audit_note(self):
-        item = SimpleNamespace(status='Pendiente', internal_notes=None)
+        item = SimpleNamespace(id='isolated-case', status='Pendiente', internal_notes=None)
         db = MagicMock()
-        with patch('app.api.v1.cases.find_case_or_fallback', return_value=item):
-            dispatch_case('test', CaseDispatch(assigned_department='Equipo', assigned_to='Ana'), db)
+        with patch('app.api.v1.cases.writable_case', return_value=item):
+            dispatch_case('test', CaseDispatch(assigned_department='Equipo', assigned_to='Ana', note='Verificar la solicitud en sitio.', confirmed_review=True, expected_revision=revision(item)), db, SimpleNamespace(full_name='Responsable real', id='test-user'))
         self.assertIn('Ana', item.internal_notes)
         self.assertEqual(item.status, 'En Gestión')
         db.commit.assert_called_once()

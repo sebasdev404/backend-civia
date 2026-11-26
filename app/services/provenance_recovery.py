@@ -150,7 +150,10 @@ def run_recovery(db, *, apply=False, expected_recoverable=None):
                     review = CaseProvenanceReview(case_id=case.id, batch=BATCH)
                     db.add(review)
                 review.status, review.reason = item["status"], item["reason"]
-                review.evidence_json, review.reviewed_by, review.checked_at = item, ACTOR, now
+                # Keep the dated conflict comparison when rerunning the origin audit.
+                previous_conflict = (review.evidence_json or {}).get("conflict_review")
+                review.evidence_json = {**item, **({"conflict_review": previous_conflict} if previous_conflict else {})}
+                review.reviewed_by, review.checked_at = ACTOR, now
             db.commit()
         return {"batch": BATCH, "applied": apply, "total_reviewed": len(plan), "counts": dict(counts),
                 "reasons": dict(Counter(item["reason"] for item in plan)), "links_added": changed_links, "items": plan,

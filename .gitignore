@@ -49,3 +49,9 @@ static/covers/
 # Temporary test images / samples
 esri_sample.png
 osm_sample.png
+
+# Private deployment values and backups
+deploy/*.env
+*.dump
+*.enc
+backups/

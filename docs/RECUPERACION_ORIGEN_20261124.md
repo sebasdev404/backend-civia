@@ -33,12 +33,12 @@ Cada comentario recuperado conserva una copia de la captura en `case_comments`. 
 
 ## Cómo consultarlo
 
-En **Gestión de casos → Casos y seguimiento**, usar **Procedencia**:
+En **Gestión de casos → Casos y seguimiento**, abrir **Filtros** y usar **Procedencia**:
 
 - **Origen pendiente de verificar:** los 244 pendientes, con advertencia y motivo.
 - **Origen recuperado de captura:** los 871 recuperados, con la limitación de verificación local.
 
-El detalle del caso también muestra esa advertencia. El resultado no modifica su estado de atención.
+El detalle del caso muestra el aviso contextual y la evidencia en **Datos y origen**. El resultado no modifica su estado de atención.
 
 ## Herramientas
 
@@ -49,6 +49,8 @@ El detalle del caso también muestra esa advertencia. El resultado no modifica s
 - Informes de IDs/huellas, sin textos de comentarios ni credenciales: `artifacts/provenance_recovery_20261124_preview.json` y `artifacts/provenance_recovery_20261124_applied.json`, en la carpeta general del proyecto.
 
 ## Siguiente revisión
+
+Actualización del 24/11/2026: [comparación de los 152 conflictos terminada](REVISION_CONFLICTOS_20261124.md), con resultado guardado y enlaces entre expedientes. Su consolidación sigue pendiente; no cambia el total de 244 casos por resolver.
 
 Los 152 conflictos requieren revisar la posible duplicidad con el caso que ya tiene el comentario: no se aprueba una fusión automática. Los 87 autores discrepantes y los 5 textos ausentes necesitan evidencia adicional o recuperación autorizada de la fuente. Mantenerlos como no verificados mientras falte esa evidencia.
 

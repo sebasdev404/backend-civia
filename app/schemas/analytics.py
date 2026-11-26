@@ -6,7 +6,7 @@ class DashboardSummaryResponse(BaseModel):
     critical_cases: int
     in_progress_cases: int
     resolved_cases: int
-    active_territorial_alerts: int
+    active_territorial_alerts: int | None
     primary_category: str
     categories_distribution: Dict[str, int]
     sentiment_distribution: Dict[str, int]

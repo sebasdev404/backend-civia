@@ -16,9 +16,12 @@ def real_image_url(url):
     if not url:
         return None
     parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        return None
     if parsed.path.rsplit("/", 1)[-1].lower() in GENERIC_COVERS or (parsed.hostname or "").endswith("unsplash.com"):
+        return None
+    if not parsed.scheme:
+        safe_local = re.fullmatch(r"/assets/(?:static/(?:covers|thumbnails)/[A-Za-z0-9_-]+\.jpg|api/v1/meta/post-(?:image|thumbnail)/[A-Za-z0-9_-]+)", parsed.path)
+        return url if safe_local and not parsed.netloc and not parsed.fragment else None
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
         return None
     return url
 

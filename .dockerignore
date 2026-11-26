@@ -1,0 +1,17 @@
+.git
+.env*
+venv
+.venv
+__pycache__
+*.pyc
+static
+tests
+docs
+*.xlsx
+*.csv
+*.dump
+*.backup
+*.log
+artifacts
+deploy
+backups

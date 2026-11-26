@@ -19,3 +19,9 @@ class User(Base):
     reset_otp_expires_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    @property
+    def account_revision(self):
+        import hashlib,json
+        values={key:str(getattr(self,key,None)) for key in ('id','email','full_name','role','department','is_active','updated_at')}
+        return hashlib.sha256(json.dumps(values,sort_keys=True).encode()).hexdigest()

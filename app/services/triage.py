@@ -9,6 +9,8 @@ from sqlalchemy import tuple_
 from app.models.case import Case
 from app.models.case_comment import CaseComment
 from app.models.meta_post import MetaPost
+from app.services.case_consolidation import assert_writable
+from app.services import case_workflow as workflow
 
 
 def captured_comments(post):
@@ -79,9 +81,12 @@ def consolidate_comments(db, payload, user):
         case = db.query(Case).filter(Case.id == target_id).with_for_update().first() if target_id else None
         if target_id and case is None:
             raise HTTPException(404, "El caso de destino no existe")
-        if case and case.status in ("Resuelto", "No requiere gestión"):
+        if case:
+            assert_writable(db, case.id)
+        if case and case.status not in workflow.OPEN:
             raise HTTPException(409, "El caso de destino está cerrado. Revisa su gestión antes de asociar comentarios.")
         created = case is None
+        before = workflow.snapshot(case) if case else {}
         first = captured[keys[0][0]][keys[0][1]]
         if created:
             texts = [captured[p][c].get("content") or captured[p][c].get("message") for p, c in keys]
@@ -115,9 +120,8 @@ def consolidate_comments(db, payload, user):
         else:
             case.comments_count = max(case.comments_count or 0, adopted) + added
         if added or adopted:
-            stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
-            note = f"[{stamp}] [Triaje CIVIA por {user.id}]: {added} comentarios asociados; {adopted} vínculos anteriores normalizados."
-            case.internal_notes = ((case.internal_notes or "") + "\n" + note).strip()
+            note = f"{added} comentarios asociados; {adopted} vínculos anteriores normalizados."
+            workflow.record(db, case, user, 'created_from_comments' if created else 'comments_linked', note, before)
         db.commit()
         return {"case_id": case.id, "created": created, "linked": added,
                 "already_linked": len(keys) - added, "comments_count": case.comments_count}

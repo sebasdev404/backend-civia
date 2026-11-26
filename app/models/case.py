@@ -13,7 +13,7 @@ class Case(Base):
     category = Column(String(100), nullable=False, index=True)
     sentiment = Column(String(50), nullable=False)
     location = Column(String(150), nullable=False)
-    zone = Column(String(50), default="centro", index=True)
+    zone = Column(String(50), nullable=True, index=True)
     date_time = Column(String(100), nullable=False)
     status = Column(String(50), default="Pendiente", index=True)
     media_type = Column(String(20), default="none")

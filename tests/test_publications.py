@@ -162,12 +162,13 @@ class PublicationsTests(unittest.TestCase):
         self.assertNotEqual(source["id"], post["id"])
 
     def test_restart_recovers_interrupted_jobs(self):
-        with patch.object(meta_sync_jobs._executor, "submit"):
+        with patch.object(meta_sync_jobs._executor, "submit") as submit:
             job = meta_sync_jobs.start_job(self.db)
-        meta_sync_jobs.recover_jobs(self.db)
+            meta_sync_jobs.recover_jobs(self.db)
+            self.assertEqual(submit.call_count,2)
         row = self.db.get(MetaSyncJob, job["id"])
-        self.assertEqual(row.status, "interrupted")
-        self.assertIsNone(row.active_key)
+        self.assertEqual(row.status, "queued")
+        self.assertEqual(row.active_key,'connected')
 
     def test_fast_capture_does_not_call_ai_or_wait_for_cover_downloads(self):
         with patch('sync_live_service.sync_facebook_live_posts') as facebook, patch('sync_live_service.sync_instagram_publications') as instagram:

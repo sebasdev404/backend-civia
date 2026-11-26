@@ -7,7 +7,11 @@ from fastapi.testclient import TestClient
 
 from app.api.v1.citizens import router
 from app.core.database import SessionLocal
-from app.core.security import create_access_token
+from app.services.auth_sessions import issue_session
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+from sqlalchemy.pool import StaticPool
+from app.core.database import Base, get_db
 from app.models.citizen import Citizen
 from app.models.user import User
 from app.services.citizen_import import parse_contact_file, import_contacts, phone_key
@@ -23,12 +27,21 @@ class RealContactImportTests(unittest.TestCase):
         cls.parsed = parse_contact_file(cls.content, WORKBOOK.name)
         app = FastAPI()
         app.include_router(router, prefix="/api/v1")
+        cls.fixture_engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)
+        Base.metadata.create_all(cls.fixture_engine)
+        cls.fixture_db = Session(cls.fixture_engine)
+        account = User(id='import-fixture', email='fixture@import.invalid', full_name='Isolated import fixture', role='ADMIN', hashed_password='unused', is_active=True)
+        cls.fixture_db.add(account); cls.fixture_db.flush()
+        token = issue_session(cls.fixture_db, account)
+        import_contacts(cls.fixture_db, cls.parsed)
+        cls.fixture_db.commit()
+        app.dependency_overrides[get_db] = lambda: cls.fixture_db
         cls.client = TestClient(app)
-        with SessionLocal() as db:
-            user = db.query(User).filter(User.is_active == True).first()
-            if user is None:
-                raise unittest.SkipTest("Se requiere un usuario existente")
-            cls.headers = {"Authorization": "Bearer " + create_access_token({"sub": user.id})}
+        cls.headers = {'Authorization': 'Bearer ' + token}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.client.close(); cls.fixture_db.close(); cls.fixture_engine.dispose()
 
     def test_actual_workbook_rows_and_full_metadata(self):
         parsed = self.parsed
@@ -77,7 +90,7 @@ class RealContactImportTests(unittest.TestCase):
         data = first.json()
         self.assertLessEqual(len(data["items"]), 50)
         self.assertTrue(all("source_data" not in item for item in data["items"]))
-        with SessionLocal() as db:
+        with Session(self.fixture_engine) as db:
             imported = db.query(Citizen).filter(Citizen.handle.like("contact:%")).first()
             if not imported:
                 return

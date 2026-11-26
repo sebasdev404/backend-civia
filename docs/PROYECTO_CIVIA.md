@@ -1,8 +1,20 @@
 # CIVIA: estructura, funcionamiento y pendientes
 
-Fecha de revisión: **24 de noviembre de 2026**.
+Fecha de revisión: **25 de noviembre de 2026**.
+
+La [preparación de producción](PREPARACION_PRODUCCION_20261125.md) documenta radicados con soporte, auditoría, correo persistente, webhook, migraciones, copias y despliegue. El [manual operativo](../deploy/README.md) distingue la verificación local de la salida pública pendiente.
 
 **Lista de avance:** [tareas terminadas y pendientes](SEGUIMIENTO.md). Las completadas aparecen marcadas y tachadas, con alcance y evidencia.
+
+Última revisión de datos: [comparación de 152 conflictos de origen](REVISION_CONFLICTOS_20261124.md). Resultados persistidos; decisiones de consolidación pendientes.
+
+Disponible para revisión: [consolidación reversible de expedientes](CONSOLIDACION_REVERSIBLE.md), con elección del principal, auditoría y reversión. Su implementación no aplicó decisiones sobre los pares reales.
+
+También está disponible la [corrección auditada de despachos de prueba](CORRECCION_DESPACHOS_PRUEBA.md), a partir del hallazgo explícito del primer par. La herramienta conserva el historial y requiere una decisión sobre el expediente real.
+
+La [reorganización de la bandeja y el expediente](REDISENO_GESTION_CASOS_20261124.md) prioriza comentario, decisión y seguimiento, con datos históricos y herramientas de procedencia en una sección secundaria. Incluye alcance y validación visual; la aceptación del usuario y el resto del rediseño siguen pendientes.
+
+La [adaptación de pantallas](RESPONSIVE_20261124.md) registra la corrección posterior de distribución en escritorio amplio, cuadrículas según el contenedor y pruebas entre 320 y 3840 px. Distingue la matriz local de la validación pendiente en dispositivos físicos y Safari/iOS.
 
 Este es el documento central del proyecto. Describe el código inspeccionado, no una certificación de funcionamiento en producción. La entrega del 24/11/2026 se publicó en ambos repositorios; consultar `SEGUIMIENTO.md` y el historial Git para distinguirla de cambios posteriores. La revisión documental inicial no consultó Meta ni ejecutó análisis de pago; las verificaciones posteriores de procedencia se documentan por separado.
 
@@ -22,7 +34,7 @@ Un comentario no equivale a un caso; un nombre de Facebook no acredita identidad
 
 | Capa | Implementación actual | Ubicación |
 | --- | --- | --- |
-| Interfaz | Next.js **16.3.8**, React **19.2.8**, TypeScript, SCSS Modules | `frontend-civia/src` |
+| Interfaz | Next.js **16.4.6**, React **19.2.8**, TypeScript, SCSS Modules | `frontend-civia/src` |
 | Navegación y ayudas | Menú por tareas, navegación de espacios y ayuda contextual | `src/lib/navigation.ts`, `src/lib/help.ts`, `src/components/ui` |
 | API | FastAPI con rutas bajo `/api/v1` | `backend-civia/app/api/v1` |
 | Persistencia | SQLAlchemy y PostgreSQL | `app/models`, `app/core/database.py` |
@@ -57,6 +69,7 @@ Fuente del menú actual: `frontend-civia/src/lib/navigation.ts`. Los README anti
 | `users` | Cuentas, rol y estado de acceso | `app/models/user.py` |
 | `meta_posts` | Publicaciones conectadas de Facebook/Instagram y comentarios capturados en JSON | `app/models/meta_post.py` |
 | `cases` | Expedientes de atención, asignación, notas y resolución | `app/models/case.py` |
+| `case_workflow_events` | Actuaciones de atención con actor, soporte y datos anteriores/posteriores | `app/models/case_workflow.py` |
 | `incidents` | Registros territoriales para el mapa | `app/models/incident.py` |
 | `citizens` | Contactos y metadatos del archivo importado | `app/models/citizen.py` |
 | `post_contexts` | Resumen o transcripción aportados para una publicación | `app/models/conversation.py` |
@@ -110,10 +123,11 @@ Operaciones persistidas existentes en `/api/v1/cases`:
 - `/{id}/dispatch`: guardar dependencia/responsable y pasar a `En Gestión`.
 - `/{id}/notes`: agregar una nota a la bitácora.
 - `/{id}/resolve`: guardar resolución y responsable de cierre; pasar a `Resuelto`.
+- `/{id}/reopen`: volver de `Resuelto` o `No requiere gestión` a `Pendiente`, con motivo, confirmación y permisos de Administración/Secretaría. Desactiva asignación, solución y borrador del ciclo anterior; conserva sus valores y actuaciones en el historial.
 - `/{id}/public-response`: guardar texto de respuesta. **No lo publica en Facebook/Instagram.**
 - `/{id}/priority-action`: alternar la prioridad de intervención.
 
-La interfaz también permite marcar `No requiere gestión`. Los estados están representados mayormente como cadenas; falta una política uniforme de transiciones y validaciones en backend.
+**Actualizado el 25/11/2026:** las transiciones ordinarias se validan en `app/services/case_workflow.py`. Asignar exige revisión, persona, equipo y próxima actuación; cerrar exige gestión activa, resultado, soporte y confirmación. `No requiere gestión` es una decisión motivada desde pendiente y no cuenta como solución. PATCH no modifica estado, origen ni bitácora; todas las acciones exigen la versión revisada del expediente y guardan el actor autenticado. El detalle presenta `case_workflow_events` sin inventar eventos anteriores. Ver [flujo, pruebas y límites](FLUJO_ATENCION_20261125.md).
 
 **Implementado el 24/11/2026 — primer paso de preparación:** el agrupamiento ahora abre una revisión explícita para crear un caso o asociar comentarios a un caso existente. `POST /api/v1/triage/consolidate` valida las capturas, exige sesión firmada y rol autorizado, bloquea publicaciones en orden estable y guarda los vínculos en una transacción. `case_comments` conserva IDs completos, copia del comentario y usuario que lo vinculó. Repetir una selección no duplica el caso ni sus conteos; una selección en conflicto se rechaza íntegramente. El detalle muestra los comentarios vinculados.
 
@@ -150,7 +164,7 @@ El mapa utiliza `incidents` y `app/services/map_evidence.py` para auditar eviden
 
 Los listados de casos/publicaciones tienen paginación y detalle bajo demanda. `post_images.py` produce miniaturas de portadas reales y evita portadas genéricas. Las carpetas de caché están ignoradas en Git. Si no existe imagen original disponible, se indica; no se toma otra publicación para rellenar el espacio.
 
-**Pendiente en Inicio:** `totalReportes = 1280 + cases.length` no es un total real, y `API.cases.getAll()` carga por defecto hasta 500 casos. Los indicadores globales deben salir de agregados del backend sobre el universo filtrado, con fecha de actualización y definición de cada métrica. La emoción de casos no debe etiquetarse como apoyo/crítica contextual.
+**Inicio e Indicadores corregidos:** consultan `/api/v1/analytics/overview`, con agregados sobre todo el histórico, exclusión de duplicados activa y separación de expedientes, captura, conteos reportados y análisis contextual. Se retiraron el incremento fijo de 1280, indicadores simulados por rol, serie semanal e informes de ejemplo. Las emociones conservan las etiquetas guardadas; no determinan apoyo/crítica contextual. Los tiempos sin instrumentación se muestran No disponible. Ver [definiciones, exportaciones y validación](INDICADORES_REALES_20261124.md). Los conteos exactos no certifican la calidad de las clasificaciones históricas.
 
 ## 10. Acceso y seguridad: estado real
 
@@ -158,10 +172,12 @@ Existen los roles `ADMIN`, `ALCALDE`, `SECRETARIO` y `OPERADOR`, pero la present
 
 Pendientes antes de exponer el sistema públicamente:
 
-- Retirar el acceso automático y los `demo-token-*` de `AuthContext` y del autenticador general del backend. Ciudadanos ya exige token firmado; otras rutas usan la dependencia general que aún admite demostración.
-- Aplicar autenticación y autorización uniformes a casos, mapa, gestión de usuarios, exportaciones y rutas administrativas. Hay rutas sensibles sin dependencia de usuario.
-- Restringir/deshabilitar seed y simuladores fuera de un entorno aislado. No mezclar su contenido con datos reales.
-- Revisar firma, deduplicación, límite de solicitudes y procesamiento diferido del webhook. La verificación GET no sustituye a autenticar los eventos POST.
+- **Implementado el 25/11/2026:** retirados acceso automático, tokens demo y cambio de rol de presentación. API y exportaciones exigen sesión; la interfaz valida el perfil con el servidor, gestiona 401/403 y conserva la ruta de regreso. Política central por rol, administración solo ADMIN y seed/simulación deshabilitados. Ver [permisos, pruebas y pendientes](SEGURIDAD_SESIONES_20261125.md).
+- **Implementado el 25/11/2026:** sesiones registradas y revocables, cookie HttpOnly/Secure mediante Next y pantalla Mi cuenta y seguridad. El JWT no se entrega al JavaScript del navegador ni se guarda en localStorage; cerrar sesión o cambiar/restablecer contraseña invalida los accesos correspondientes. La actualización exige iniciar sesión otra vez, con la contraseña existente. Migración `20261125_auth_sessions.sql` para otros entornos.
+- **Implementado el 25/11/2026:** OTP protegido mediante HMAC, uso único, caducidad y presupuesto de errores; respuestas de recuperación uniformes y límites atómicos en base de datos. El envío se separa de la respuesta pública y requiere SMTP con TLS. Migración aditiva `20261125_password_recovery.sql` para otros entornos.
+- Confirmar las cuentas históricas y sus credenciales definitivas; configurar y validar SMTP real, límites por IP original en el acceso público y operación/reintentos del envío. Las cuentas existentes no se eliminaron ni se cambiaron sus contraseñas durante estas entregas.
+- La firma HMAC del webhook ya se comprueba antes de procesar el cuerpo. Faltan deduplicación, límite compartido de solicitudes y procesamiento diferido.
+- La lectura de un incidente ya no crea un expediente. Debe existir un caso para abrirlo; la creación requiere un camino de escritura autorizado.
 - Definir registro de auditoría estructurado: quién hizo qué, cuándo y sobre qué objeto. Las notas de texto no cubren por sí solas esa necesidad.
 - Validar secretos, CORS, copias de seguridad, restauración, retención de datos y borrado de contactos según las decisiones del responsable del proyecto.
 
@@ -203,7 +219,7 @@ npm run dev
 
 Interfaz: `http://localhost:3000`. API: `http://127.0.0.1:8000/api/v1`. Salud: `/health`. Documentación de endpoints: `http://127.0.0.1:8000/docs`.
 
-La URL del frontend se configura con `NEXT_PUBLIC_API_URL`; algunas llamadas aún tienen `localhost:8000` escrito directamente y requieren centralización antes de un despliegue remoto. El backend configura base de datos, autenticación e integraciones mediante `app/core/config.py` y su entorno; no deben compartirse valores reales en este archivo.
+La URL del frontend se configura con `NEXT_PUBLIC_API_URL`; las peticiones de las vistas usan el cliente común, incluidas las exportaciones y los borradores de IA. El backend configura base de datos, autenticación e integraciones mediante `app/core/config.py` y su entorno; no deben compartirse valores reales en este archivo. `ENVIRONMENT=production` exige clave JWT ajena a los ejemplos conocidos y orígenes CORS HTTPS explícitos.
 
 `Base.metadata.create_all()` crea tablas ausentes, pero no reemplaza un sistema completo de migraciones de columnas existentes. Revisar `migrations/` antes de actualizar otro entorno. No ejecutar seed ni scripts históricos como paso automático de instalación de una base real.
 

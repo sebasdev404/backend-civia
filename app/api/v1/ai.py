@@ -1,3 +1,4 @@
+from app.core.authentication import get_current_user
 from fastapi import APIRouter, HTTPException, status, Depends
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
@@ -5,16 +6,22 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.models.case import Case
+from app.models.case_consolidation import CaseConsolidation
+from sqlalchemy import select
+from typing import Annotated
 from app.services.ai_classifier import ai_classifier
 
 router = APIRouter(prefix="/ai", tags=["Inteligencia Artificial y NLP"])
 
 class CommentClassifyRequest(BaseModel):
-    text: str = Field(..., description="Texto del comentario del ciudadano a analizar")
+    text: str = Field(..., min_length=1, max_length=20000, description="Texto del comentario del ciudadano a analizar")
+
+class MatchCasesRequest(CommentClassifyRequest):
+    candidate_ids: List[Annotated[str, Field(min_length=1, max_length=50)]] = Field(min_length=1,max_length=20)
 
 class SimilarityRequest(BaseModel):
-    text_a: str
-    text_b: str
+    text_a: str = Field(min_length=1,max_length=20000)
+    text_b: str = Field(min_length=1,max_length=20000)
 
 class MatchCaseItem(BaseModel):
     case_id: str
@@ -42,7 +49,7 @@ def classify_citizen_comment(payload: CommentClassifyRequest):
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error procesando análisis con OpenAI: {str(e)}"
+            detail="No se pudo completar el análisis; revisa la configuración privada."
         )
 
 @router.post("/similarity")
@@ -62,25 +69,26 @@ def compare_similarity(payload: SimilarityRequest):
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error calculando similitud vectorial: {str(e)}"
+            detail="No se pudo comparar los textos; revisa el servicio de análisis."
         )
 
 @router.post("/match-cases", response_model=List[MatchCaseItem])
 def match_comment_against_open_cases(
-    payload: CommentClassifyRequest,
+    payload: MatchCasesRequest,
     db: Session = Depends(get_db)
 ):
     """
-    Evalúa un comentario entrante frente a todos los casos abiertos en Neiva
-    para detectar posibles duplicados y sugerir asociación inmediata.
+    Compara hasta 20 candidatos elegidos explícitamente; nunca asocia por sí sola.
     """
     clean_text = payload.text.strip()
     if not clean_text:
         return []
 
     try:
+        duplicates=select(CaseConsolidation.duplicate_case_id).where(CaseConsolidation.undone_at.is_(None))
+        open_cases = db.query(Case).filter(Case.id.in_(payload.candidate_ids),Case.status.in_(("Pendiente","En Gestión")),~Case.id.in_(duplicates)).order_by(Case.id).all()
+        if not open_cases:return []
         comment_emb = ai_classifier.get_embedding(clean_text)
-        open_cases = db.query(Case).filter(Case.status != "Resuelto").all()
         
         matches: List[MatchCaseItem] = []
         for c in open_cases:
@@ -104,217 +112,74 @@ def match_comment_against_open_cases(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error buscando casos afines: {str(e)}"
+            detail="No se pudo completar la búsqueda de casos afines."
         )
 
 
 @router.get("/credits")
 def get_ai_credits_info(db: Session = Depends(get_db)):
-    """
-    Monitorea el estado de la API Key de OpenAI, conectividad en tiempo real,
-    estimación de tokens y costo acumulado de los casos clasificados en CIVIA,
-    e intenta obtener saldo si se dispone de token con scope de administración.
-    """
-    import os
-    import time
-    import urllib.request
-    import urllib.error
-    import json
     from app.core.config import settings
-
-    api_key = settings.OPENAI_API_KEY or os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        return {
-            "status": "No configurada",
-            "has_key": False,
-            "quota_status": "Sin llave API",
-            "latency_ms": 0,
-            "cases_analyzed": 0,
-            "estimated_tokens": 0,
-            "estimated_cost_usd": 0.0,
-            "model": "Local / Heurístico",
-            "masked_key": "No configurada",
-            "billing_url": "https://platform.openai.com/settings/organization/billing/overview",
-            "detail": "Configure OPENAI_API_KEY en backend-civia/.env"
-        }
-
-    masked_key = f"{api_key[:8]}...{api_key[-4:]}" if len(api_key) > 12 else "sk-***"
-    
-    # 1. Contar casos analizados en PostgreSQL
-    cases_analyzed = db.query(Case).count()
-    # Cada caso consume aprox 350 tokens (prompt + respuesta JSON estructurada)
-    estimated_tokens = cases_analyzed * 350
-    # GPT-4o-mini cuesta aprox $0.15 por 1M tokens de entrada y $0.60 por 1M de salida -> promedio $0.25 / 1M
-    estimated_cost_usd = round((estimated_tokens / 1_000_000) * 0.25, 4)
-
-    # 2. Test en vivo a OpenAI para verificar saldo / conectividad / latencia
-    status_msg = "Activo / Conectado"
-    quota_status = "Cuota disponible (Operativo)"
-    latency_ms = 0
-    balance_amount = None
-    currency = "USD"
-    
-    t0 = time.time()
-    try:
-        req = urllib.request.Request(
-            "https://api.openai.com/v1/models",
-            headers={"Authorization": f"Bearer {api_key}"}
-        )
-        with urllib.request.urlopen(req, timeout=4) as resp:
-            latency_ms = round((time.time() - t0) * 1000, 1)
-            if resp.status == 200:
-                status_msg = "Conectado / Operativo"
-                quota_status = "Cuota disponible (Activa)"
-    except urllib.error.HTTPError as e:
-        latency_ms = round((time.time() - t0) * 1000, 1)
-        if e.code == 429:
-            status_msg = "Cuota Agotada"
-            quota_status = "Alerta: Saldo o límite de cuota alcanzado (HTTP 429)"
-        elif e.code == 401:
-            status_msg = "No Autorizado"
-            quota_status = "API Key no válida o revocada (HTTP 401)"
-        else:
-            status_msg = f"HTTP {e.code}"
-            quota_status = f"Respuesta inesperada: HTTP {e.code}"
-    except Exception as e:
-        status_msg = "Error de Red"
-        quota_status = f"No se pudo conectar a OpenAI: {str(e)}"
-
-    # 3. Saldo Real Confirmado de OpenAI
-    initial_budget = float(getattr(settings, "OPENAI_INITIAL_BUDGET", 10.00))
-    real_balance = getattr(settings, "OPENAI_REAL_BALANCE", None)
-    real_consumed = getattr(settings, "OPENAI_CONSUMED_USD", None)
-
-    if real_balance is not None:
-        remaining_usd = round(float(real_balance), 2)
-        consumed_usd = round(max(0.0, initial_budget - remaining_usd), 4)
-    elif real_consumed is not None:
-        consumed_usd = round(float(real_consumed), 4)
-        remaining_usd = round(max(0.0, initial_budget - consumed_usd), 2)
-    else:
-        consumed_usd = 0.0
-        remaining_usd = round(initial_budget, 2)
-
-    percent_consumed = round((consumed_usd / initial_budget) * 100, 1) if initial_budget > 0 else 0.0
-    percent_remaining = round(max(0.0, 100.0 - percent_consumed), 1)
-
+    from app.models.operations import SystemSetting
+    item=db.get(SystemSetting,'ai_budget')
+    values=item.value if item else {}
     return {
-        "status": status_msg,
-        "has_key": True,
-        "quota_status": quota_status,
-        "latency_ms": latency_ms,
-        "cases_analyzed": cases_analyzed,
-        "tokens_processed": estimated_tokens,
-        "consumed_usd": consumed_usd,
-        "remaining_usd": remaining_usd,
-        "initial_budget_usd": initial_budget,
-        "percent_consumed": percent_consumed,
-        "percent_remaining": percent_remaining,
-        "model": "OpenAI GPT-4o-mini",
-        "masked_key": masked_key,
-        "balance_amount": remaining_usd,
-        "currency": currency,
-        "billing_url": "https://platform.openai.com/settings/organization/billing/overview",
-        "detail": (
-            f"Saldo real en OpenAI: ${remaining_usd:.2f} USD de ${initial_budget:.2f} USD asignados. "
-            f"Consumo real registrado: ${consumed_usd:.4f} USD ({percent_consumed}%) analizando {cases_analyzed:,} comentarios ciudadanos."
-        )
-    }
+        'status':'Configurada; conexi\u00f3n no verificada' if settings.OPENAI_API_KEY else 'No configurada',
+        'has_key':bool(settings.OPENAI_API_KEY),'quota_status':'Consultar facturaci\u00f3n del proveedor',
+        'latency_ms':None,'cases_analyzed':None,'tokens_processed':None,'estimated_tokens':None,'estimated_cost_usd':None,
+        'initial_budget_usd':values.get('initial_budget'),'remaining_usd':values.get('real_balance'),'consumed_usd':values.get('consumed_usd'),
+        'percent_consumed':None,'percent_remaining':None,'model':'gpt-4o-mini',
+        'masked_key':'Configurada' if settings.OPENAI_API_KEY else 'No configurada',
+        'budget_source':'manual_record' if item else 'unavailable',
+        'billing_url':'https://platform.openai.com/settings/organization/billing/overview',
+        'detail':'El presupuesto es una declaraci\u00f3n administrativa. CIVIA no consulta el saldo del proveedor ni estima gasto a partir del n\u00famero de casos.'}
 
 
 class BalanceSyncRequest(BaseModel):
-    initial_budget: Optional[float] = None
-    real_balance: Optional[float] = None
-    consumed_usd: Optional[float] = None
+    initial_budget: Optional[float] = Field(default=None,ge=0,le=1000000,allow_inf_nan=False)
+    real_balance: Optional[float] = Field(default=None,ge=0,le=1000000,allow_inf_nan=False)
+    consumed_usd: Optional[float] = Field(default=None,ge=0,le=1000000,allow_inf_nan=False)
+
 
 @router.post("/sync-balance")
-def sync_ai_balance(payload: BalanceSyncRequest):
-    """
-    Sincroniza y persiste el saldo real y presupuesto del proyecto OpenAI.
-    """
-    from app.core.config import settings, _ENV_PATH
-    import re
-
-    if payload.initial_budget is not None:
-        settings.OPENAI_INITIAL_BUDGET = float(payload.initial_budget)
-    if payload.real_balance is not None:
-        settings.OPENAI_REAL_BALANCE = float(payload.real_balance)
-        settings.OPENAI_CONSUMED_USD = round(max(0.0, settings.OPENAI_INITIAL_BUDGET - settings.OPENAI_REAL_BALANCE), 4)
-    elif payload.consumed_usd is not None:
-        settings.OPENAI_CONSUMED_USD = float(payload.consumed_usd)
-        settings.OPENAI_REAL_BALANCE = round(max(0.0, settings.OPENAI_INITIAL_BUDGET - settings.OPENAI_CONSUMED_USD), 2)
-
-    # Persistir en .env
-    try:
-        if os.path.exists(_ENV_PATH):
-            with open(_ENV_PATH, 'r', encoding='utf-8') as ef:
-                lines = ef.readlines()
-            
-            new_lines = []
-            keys_updated = set()
-            for line in lines:
-                if line.startswith("OPENAI_INITIAL_BUDGET="):
-                    new_lines.append(f"OPENAI_INITIAL_BUDGET={settings.OPENAI_INITIAL_BUDGET:.2f}\n")
-                    keys_updated.add("OPENAI_INITIAL_BUDGET")
-                elif line.startswith("OPENAI_REAL_BALANCE="):
-                    new_lines.append(f"OPENAI_REAL_BALANCE={settings.OPENAI_REAL_BALANCE:.2f}\n")
-                    keys_updated.add("OPENAI_REAL_BALANCE")
-                elif line.startswith("OPENAI_CONSUMED_USD="):
-                    new_lines.append(f"OPENAI_CONSUMED_USD={settings.OPENAI_CONSUMED_USD:.4f}\n")
-                    keys_updated.add("OPENAI_CONSUMED_USD")
-                else:
-                    new_lines.append(line)
-            
-            if "OPENAI_INITIAL_BUDGET" not in keys_updated:
-                new_lines.append(f"OPENAI_INITIAL_BUDGET={settings.OPENAI_INITIAL_BUDGET:.2f}\n")
-            if "OPENAI_REAL_BALANCE" not in keys_updated:
-                new_lines.append(f"OPENAI_REAL_BALANCE={settings.OPENAI_REAL_BALANCE:.2f}\n")
-            if "OPENAI_CONSUMED_USD" not in keys_updated:
-                new_lines.append(f"OPENAI_CONSUMED_USD={settings.OPENAI_CONSUMED_USD:.4f}\n")
-
-            with open(_ENV_PATH, 'w', encoding='utf-8') as ef:
-                ef.writelines(new_lines)
-    except Exception as e:
-        print(f"No se pudo guardar en .env: {e}")
-
-    return {
-        "success": True,
-        "initial_budget_usd": settings.OPENAI_INITIAL_BUDGET,
-        "remaining_usd": settings.OPENAI_REAL_BALANCE,
-        "consumed_usd": settings.OPENAI_CONSUMED_USD,
-        "message": f"Saldo real actualizado a ${settings.OPENAI_REAL_BALANCE:.2f} USD de ${settings.OPENAI_INITIAL_BUDGET:.2f} USD."
-    }
-
-
+def sync_ai_balance(payload: BalanceSyncRequest, db: Session = Depends(get_db), actor=Depends(get_current_user)):
+    from app.models.operations import SystemSetting
+    from app.services.audit import record
+    values=payload.model_dump(exclude_none=True)
+    if not values:raise HTTPException(422,'Indica los valores que deseas registrar.')
+    item=db.query(SystemSetting).filter_by(key='ai_budget').with_for_update().first()
+    if item is None:
+        item=SystemSetting(key='ai_budget',value={},updated_by=actor.id);db.add(item)
+    item.value={**item.value,**values};item.updated_by=actor.id
+    record(db,actor,'budget_recorded','ai_budget',fields=list(values))
+    db.commit()
+    return {'success':True,'message':'Presupuesto declarado guardado. No acredita saldo del proveedor.'}
 
 
 class SmartReplyRequest(BaseModel):
-    comment_text: str = Field(..., description="Texto del comentario o crítica del ciudadano")
+    comment_text: str = Field(..., min_length=1, max_length=20000, description="Texto del comentario o crítica del ciudadano")
     author_metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
     user_type: Optional[str] = "Negativo"
 
 @router.post("/generate-smart-reply")
 def generate_smart_reply(payload: SmartReplyRequest):
     """
-    Genera una respuesta inteligente institucional contextual,
-    desescalando críticas de odio, neutralizando bots o respondiendo técnicamente a temas
-    como PAE ('Por mi crítica salvé el PAE'), Malla Vial, Acueducto o Seguridad.
+    Genera un borrador de atención que requiere revisión humana y no se publica.
     """
     try:
         reply_data = ai_classifier.generate_smart_response(
             comment_text=payload.comment_text,
-            context=payload.user_type,
+            context=None,
             user_type=payload.user_type
         )
         return reply_data
     except Exception as e:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error generando respuesta con IA: {str(e)}"
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No se pudo generar el borrador; revisa la configuración o redacta manualmente."
         )
 
 class BotDetectRequest(BaseModel):
-    comment_text: str = Field(..., description="Texto del comentario")
+    comment_text: str = Field(..., min_length=1, max_length=20000, description="Texto del comentario")
     author_metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
 
 @router.post("/detect-bot")
@@ -331,5 +196,5 @@ def detect_bot_endpoint(payload: BotDetectRequest):
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error analizando detección de bot: {str(e)}"
+            detail="No se pudieron consultar las señales; no hay una conclusión confirmada."
         )

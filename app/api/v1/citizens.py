@@ -1,5 +1,6 @@
+from app.core.assets import asset_base
 from pydantic import BaseModel
-from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile, Header
+from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile, Header, Request
 from sqlalchemy.orm import Session, defer
 from sqlalchemy import or_, func, desc, case
 from typing import Optional, Dict, Any
@@ -9,6 +10,12 @@ from app.core.database import get_db
 from app.models.citizen import Citizen
 from app.models.case import Case
 from app.schemas.citizen import CitizenResponse, CitizenUploadRequest, CitizenDeleteRequest
+from app.schemas.case import CaseAction, CasePublicResponse
+from app.services import case_workflow as workflow
+from app.services.case_consolidation import assert_writable
+from app.services.provenance_recovery import reference
+from app.services.post_images import post_image_urls
+from app.models.meta_post import MetaPost
 from app.services.ai_classifier import ai_classifier
 from app.api.v1.auth import get_current_user
 from app.core.security import decode_access_token
@@ -31,7 +38,7 @@ def require_contact_manager(current_user=Depends(require_contact_user)):
     return current_user
 
 
-def delete_selected_citizens(db: Session, citizen_ids: list[str], *, missing_status=409):
+def delete_selected_citizens(db: Session, citizen_ids: list[str], *, missing_status=409, actor=None):
     ids = sorted(set(citizen_ids))
     try:
         # Lock the exact IDs and validate the entire selection before deleting any row.
@@ -41,6 +48,8 @@ def delete_selected_citizens(db: Session, citizen_ids: list[str], *, missing_sta
         deleted = db.query(Citizen).filter(Citizen.id.in_(ids)).delete(synchronize_session=False)
         if deleted != len(ids):
             raise HTTPException(409, "La selección cambió. Actualiza la lista e inténtalo nuevamente.")
+        from app.services.audit import record
+        record(db,actor,'contacts_deleted',count=deleted)
         db.commit()
     except Exception:
         db.rollback()
@@ -49,13 +58,13 @@ def delete_selected_citizens(db: Session, citizen_ids: list[str], *, missing_sta
 
 
 @router.post("/bulk-delete", dependencies=[Depends(require_contact_manager)])
-def delete_citizens_bulk(payload: CitizenDeleteRequest, db: Session = Depends(get_db)):
-    return delete_selected_citizens(db, payload.citizen_ids)
+def delete_citizens_bulk(payload: CitizenDeleteRequest, db: Session = Depends(get_db), actor=Depends(require_contact_manager)):
+    return delete_selected_citizens(db, payload.citizen_ids, actor=actor)
 
 
 @router.delete("/{citizen_id}", dependencies=[Depends(require_contact_manager)])
-def delete_citizen(citizen_id: str, db: Session = Depends(get_db)):
-    return delete_selected_citizens(db, [citizen_id], missing_status=404)
+def delete_citizen(citizen_id: str, db: Session = Depends(get_db), actor=Depends(require_contact_manager)):
+    return delete_selected_citizens(db, [citizen_id], missing_status=404, actor=actor)
 
 async def read_contact_upload(file: UploadFile):
     content = await file.read(MAX_FILE_BYTES + 1)
@@ -75,10 +84,10 @@ async def preview_contact_import(file: UploadFile = File(...), db: Session = Dep
 
 
 @router.post("/import")
-async def save_contact_import(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def save_contact_import(file: UploadFile = File(...), db: Session = Depends(get_db), actor=Depends(require_contact_manager)):
     parsed = await read_contact_upload(file)
     try:
-        return import_contacts(db, parsed)
+        return import_contacts(db, parsed, actor=actor)
     except Exception:
         db.rollback()
         raise
@@ -212,143 +221,65 @@ def get_citizen(citizen_id: str, db: Session = Depends(get_db)):
     return citizen
 
 
-class CitizenReplyRequest(BaseModel):
+def known_social_authors(citizen):
+    protected = ('usuario de facebook', 'perfil protegido', 'autor no disponible', 'ciudadano en redes')
+    return {value for value in (citizen.name, citizen.handle) if value and not any(marker in value.lower() for marker in protected)}
+
+
+class CitizenReplyRequest(CaseAction):
     case_id: str
     reply_text: str
-    status: Optional[str] = "En Gestión"
+    status: Optional[str] = None
 
-@router.get("/{citizen_id}/comments")
-def get_citizen_comments_and_posts(
-    citizen_id: str,
-    db: Session = Depends(get_db)
-):
-    """
-    Retorna el historial completo de en qué publicaciones comentó el usuario,
-    el texto de su respuesta/comentario, el post original de Meta,
-    y la propuesta de respuesta institucional inteligente generada por IA.
-    """
-    citizen = db.query(Citizen).filter(Citizen.id == citizen_id).first()
+
+@router.get('/{citizen_id}/comments')
+def get_citizen_comments_and_posts(citizen_id: str, request: Request, db: Session = Depends(get_db)):
+    citizen = db.get(Citizen, citizen_id)
     if not citizen:
-        # Buscar por handle
-        citizen = db.query(Citizen).filter(Citizen.handle == citizen_id).first()
-    if not citizen:
-        raise HTTPException(status_code=404, detail="Ciudadano no encontrado")
-
-    if citizen.channel in ("WhatsApp", "Base de Datos"):
-        return {"citizen": CitizenResponse.model_validate(citizen).model_dump(),
-                "total_comments": 0, "comments": [], "relationship_status": "not_linked"}
-
-    # 1. Buscar casos asociados al autor
-    cases = db.query(Case).filter(
-        or_(
-            Case.author == citizen.name,
-            Case.author == citizen.handle,
-            Case.author.ilike(f"%{citizen.name}%")
-        )
-    ).order_by(desc(Case.created_at)).limit(15).all()
-
-    # Solo comentarios legítimos pertenecientes a este autor
-
-    # Cargar posts de Meta
-    from app.models.meta_post import MetaPost
-    posts = {p.id: p for p in db.query(MetaPost).all()}
-    fallback_post = db.query(MetaPost).first()
-
-    comments_data = []
-    for c in cases:
-        # Detectar qué post corresponde según image_url o permalink
-        matched_post = None
-        for pid, p in posts.items():
-            if pid in (c.image_url or ""):
-                matched_post = p
-                break
-        if not matched_post:
-            matched_post = fallback_post
-
-        # Generar propuesta de respuesta institucional por IA (Modo instantáneo con caché)
-        ai_prop = ai_classifier.generate_smart_response(
-            comment_text=c.content or c.title,
-            context=c.category,
-            user_type=citizen.user_type,
-            fast_mode=True
-        )
-
-        post_cover = matched_post.cover_image if matched_post else c.image_url
-        if not post_cover or "http" not in post_cover:
-            post_cover = f"http://localhost:8000/static/covers/default_cover.jpg"
-
-        comments_data.append({
-            "case_id": c.id,
-            "author": c.author,
-            "comment_text": c.content,
-            "title": c.title,
-            "sentiment": c.sentiment,
-            "category": c.category,
-            "location": c.location,
-            "date_time": c.date_time,
-            "status": c.status,
-            "public_response": c.public_response,
-            "ai_suggestion": {
-                "topic": ai_prop.get("topic", c.category),
-                "tone": ai_prop.get("tone", "Institucional Empático"),
-                "recommended_action": ai_prop.get("recommended_action", "Atención con radicado institucional"),
-                "suggested_reply": ai_prop.get("response_text", ""),
-                "talking_points": ai_prop.get("talking_points", [])
-            },
-            "post": {
-                "id": matched_post.id if matched_post else "POST-GENERIC",
-                "title": matched_post.title if matched_post else "Publicación Institucional - Alcaldía de Neiva",
-                "cover_image": post_cover,
-                "source": matched_post.source if matched_post else c.source,
-                "permalink_url": matched_post.permalink_url if matched_post else "https://facebook.com/275486829735525",
-                "published_at": matched_post.published_at if matched_post else "Octubre 2026"
-            }
+        raise HTTPException(404, 'Ciudadano no encontrado')
+    profile = CitizenResponse.model_validate(citizen).model_dump()
+    profile['whatsapp_link'] = f"https://wa.me/{re.sub(r'[^0-9]', '', citizen.phone)}" if citizen.phone else None
+    if citizen.channel in ('WhatsApp', 'Base de Datos'):
+        return {'citizen': profile, 'total_comments': 0, 'comments': [], 'relationship_status': 'not_linked',
+                'relationship_note': 'No hay un perfil social vinculado a este contacto.'}
+    authors = known_social_authors(citizen)
+    cases = db.query(Case).filter(Case.author.in_(authors), Case.source == citizen.channel).order_by(desc(Case.created_at)).limit(15).all()
+    pids = {reference(case.internal_notes, 'Post ID') for case in cases} - {None}
+    posts = {post.id: post for post in db.query(MetaPost).filter(MetaPost.id.in_(pids))} if pids else {}
+    comments = []
+    for case in cases:
+        pid = reference(case.internal_notes, 'Post ID')
+        post = posts.get(pid)
+        comments.append({
+            'case_id': case.id, 'author': case.author, 'comment_text': case.content, 'title': case.title,
+            'sentiment': case.sentiment, 'category': case.category, 'location': case.location,
+            'date_time': case.date_time, 'status': case.status, 'public_response': case.public_response,
+            'workflow_revision': workflow.revision(case), 'ai_suggestion': None,
+            'post': {'id': post.id if post else None, 'title': post.title if post else 'Origen no verificado',
+                'cover_image': post_image_urls(post.id, post.cover_image, asset_base(request))[0] if post else None,
+                'source': post.source if post else case.source,
+                'permalink_url': post.permalink_url if post else None,
+                'published_at': post.published_at if post else None},
         })
+    return {'citizen': profile, 'total_comments': len(comments), 'comments': comments,
+            'relationship_status': 'name_match_unverified',
+            'relationship_note': 'Coincidencias exactas de nombre o usuario en el mismo canal; no certifican la identidad de la persona. Se muestran hasta 15 expedientes.'}
 
-    return {
-        "citizen": {
-            "id": citizen.id,
-            "name": citizen.name,
-            "handle": citizen.handle,
-            "phone": citizen.phone,
-            "followers_count": citizen.followers_count,
-            "user_type": citizen.user_type,
-            "bot_probability": citizen.bot_probability,
-            "bot_origin": citizen.bot_origin,
-            "neighborhood": citizen.neighborhood,
-            "channel": citizen.channel,
-            "total_reports": citizen.total_reports,
-            "sentiment_tendency": citizen.sentiment_tendency,
-            "notes": citizen.notes,
-            "whatsapp_link": f"https://wa.me/{re.sub(r'[^0-9]', '', citizen.phone)}" if citizen.phone else None
-        },
-        "total_comments": len(comments_data),
-        "comments": comments_data
-    }
 
-@router.post("/{citizen_id}/reply")
-def register_official_reply(
-    citizen_id: str,
-    payload: CitizenReplyRequest,
-    db: Session = Depends(get_db)
-):
-    """
-    Registra y guarda la respuesta institucional oficial enviada al ciudadano,
-    actualizando el estado del caso a 'En Gestión' o 'Resuelto'.
-    """
-    case = db.query(Case).filter(Case.id == payload.case_id).first()
+@router.post('/{citizen_id}/reply')
+def register_official_reply(citizen_id: str, payload: CitizenReplyRequest, db: Session = Depends(get_db), user=Depends(require_contact_user)):
+    citizen = db.get(Citizen, citizen_id)
+    if not citizen:
+        raise HTTPException(404, 'Ciudadano no encontrado')
+    case = db.query(Case).filter_by(id=payload.case_id).populate_existing().with_for_update().first()
     if not case:
-        raise HTTPException(status_code=404, detail="Caso no encontrado")
-
-    case.public_response = payload.reply_text
-    if payload.status:
-        case.status = payload.status
-    db.commit()
-
-    return {
-        "success": True,
-        "case_id": case.id,
-        "status": case.status,
-        "public_response": case.public_response,
-        "message": f"Respuesta institucional guardada para el caso {case.id}."
-    }
+        raise HTTPException(404, 'Caso no encontrado')
+    if citizen.channel in ('WhatsApp', 'Base de Datos') or case.source != citizen.channel or case.author not in known_social_authors(citizen):
+        raise HTTPException(409, 'No hay una coincidencia social registrada para este expediente. Revisa su origen desde Gesti\u00f3n de casos.')
+    assert_writable(db, case.id)
+    if payload.status is not None:
+        raise HTTPException(422, 'Guardar un borrador no cambia el estado. Atiende o cierra el caso desde su expediente.')
+    workflow.save_draft(db, case, CasePublicResponse(public_response=payload.reply_text, expected_revision=payload.expected_revision), user)
+    workflow.commit(db, case)
+    return {'success': True, 'case_id': case.id, 'status': case.status, 'public_response': case.public_response,
+            'workflow_revision': workflow.revision(case), 'message': 'Borrador interno guardado. No se envi\u00f3 ning\u00fan mensaje.'}

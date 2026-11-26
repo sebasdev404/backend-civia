@@ -6,6 +6,7 @@ Ejecutar desde backend-civia:
 
 import unittest
 import json
+import os
 from io import BytesIO
 from pathlib import Path
 
@@ -17,6 +18,8 @@ from PIL import Image
 from app.api.v1.meta import router
 from app.core.database import SessionLocal, get_db
 from app.models.meta_post import MetaPost
+from app.models.publication import PublicationSnapshot
+from app.models.case import Case
 
 
 class MetaReadIntegrationTests(unittest.TestCase):
@@ -77,8 +80,12 @@ class MetaReadIntegrationTests(unittest.TestCase):
         self.assertIsInstance(response.json(), list)
         for item in response.json():
             post = self.db.get(MetaPost, item["id"])
-            for metric in ("likes_count", "views_count", "shares_count"):
-                self.assertEqual(item[metric], getattr(post, metric) or 0)
+            snapshot = self.db.query(PublicationSnapshot).filter_by(post_id=post.id).first()
+            for metric in ("likes_count", "shares_count"):
+                expected = getattr(snapshot, metric) if snapshot else (getattr(post, metric) or None)
+                self.assertEqual(item[metric], expected)
+            captured_views = json.loads(snapshot.reactions_json or "{}").get("views", {}) if snapshot else {}
+            self.assertEqual(item["views_count"], captured_views.get("count", post.views_count or None))
 
     def test_invalid_pagination_is_rejected(self):
         for params in ({"offset": -1}, {"limit": 0}, {"limit": 2001}):
@@ -155,6 +162,7 @@ class MetaReadIntegrationTests(unittest.TestCase):
         self.assertEqual(repeated.content, response.content)
         self.assertEqual(cached.stat().st_mtime_ns, stamp)
 
+    @unittest.skipUnless(os.environ.get('CIVIA_LIVE_META_TESTS')=='1','La validación en vivo de Meta requiere activación explícita y credenciales vigentes.')
     def test_instagram_reports_actual_connection_and_does_not_seed_posts(self):
         from sync_live_service import sync_instagram_publications
         response = self.client.get("/api/v1/meta/instagram/status")
@@ -190,10 +198,16 @@ class MetaReadIntegrationTests(unittest.TestCase):
                 if not comment or "author_is_protected" not in comment:
                     continue
                 checked += 1
-                self.assertEqual(case["author"], comment["author"])
-                self.assertEqual(case["author_picture_url"], comment.get("author_picture_url"))
-                self.assertEqual(case["author_is_protected"], comment["author_is_protected"])
-                self.assertEqual(case["comment_permalink_url"], comment.get("permalink_url"))
+                stored = self.db.get(Case, case["id"])
+                self.assertEqual(case["author"], stored.author)
+                exact = stored.author == comment.get("author") and stored.content == (comment.get("content") or comment.get("message"))
+                self.assertEqual(case["author_identity_status"], "captured_exact_match" if exact else "historical_unverified")
+                if exact:
+                    self.assertEqual(case["author_picture_url"], comment.get("author_picture_url"))
+                    self.assertEqual(case["author_is_protected"], comment["author_is_protected"])
+                    self.assertEqual(case["comment_permalink_url"], comment.get("permalink_url"))
+                else:
+                    self.assertIsNone(case["author_picture_url"])
         if not checked:
             self.skipTest("No hay casos con metadatos de autor sincronizados")
 

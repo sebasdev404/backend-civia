@@ -8,6 +8,7 @@ from datetime import datetime, timezone, timedelta
 from sqlalchemy.exc import IntegrityError
 from app.core.database import SessionLocal
 from app.models.publication import MetaSyncJob
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="civia-sync")
@@ -29,9 +30,16 @@ def latest_job(db, scope="connected"):
 
 def recover_jobs(db):
     # El servidor local usa un único proceso; una ejecución anterior no sobrevive al reinicio.
+    resumed=[]
     for job in db.query(MetaSyncJob).filter(MetaSyncJob.active_key.is_not(None)):
-        job.status, job.active_key, job.error = "interrupted", None, "La actualización se interrumpió al reiniciar el servidor. Puedes iniciarla de nuevo."
+        if job.scope=='analysis':
+            job.status,job.active_key,job.error='interrupted',None,'El análisis se interrumpió. Revisa el avance antes de solicitarlo de nuevo.'
+        else:
+            job.status,job.error='queued',None
+            job.progress_json=json.dumps({'stage':'queued','detail':'Captura recuperada después del reinicio.'})
+            resumed.append((job.id,job.scope))
     db.commit()
+    for job_id,scope in resumed:_executor.submit(_run,job_id,scope)
 
 
 def _progress(job_id, **value):
@@ -98,7 +106,7 @@ def _run(job_id, scope):
             job.status, job.error = "failed", "No se pudo completar la actualización. Se conservan los datos capturados anteriormente."
         job.active_key = None
         db.commit()
-        if scope == "connected" and job.status in {"success", "partial"}:
+        if scope == "connected" and job.status in {"success", "partial"} and settings.AUTO_ANALYZE_ENABLED:
             # La captura ya está terminada y visible antes de poner la IA en su propia cola.
             start_job(db, "analysis")
 

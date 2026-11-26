@@ -1,3 +1,4 @@
+from tests.auth_helpers import prime_sessions, fixture_token
 """Isolated SQLite fixtures only. No Meta, AI calls or writes to the project database."""
 import json
 import unittest
@@ -7,7 +8,6 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 from app.core.database import Base, get_db
-from app.core.security import create_access_token
 from app.api.v1.triage import router
 from app.api.v1.meta import router as meta_router
 from app.api.v1.cases import router as cases_router
@@ -30,11 +30,12 @@ class TriageTests(unittest.TestCase):
             {"id": "full-c-123456", "author": "Author C", "message": "Otra solicitud", "time": "2026-11-24T12:06:00Z"}]
         self.db.add(MetaPost(id="test-post", title="Test publication", source="Facebook", published_at="2026-11-24", raw_comments_json=json.dumps(self.comments)))
         self.db.commit()
+        prime_sessions(self.db)
         app = FastAPI()
         for part in (router, meta_router, cases_router): app.include_router(part, prefix="/api/v1")
         app.dependency_overrides[get_db] = lambda: self.db
         self.client = TestClient(app)
-        self.headers = {"Authorization": "Bearer " + create_access_token({"sub": "test-operator"})}
+        self.headers = {"Authorization": "Bearer " + fixture_token(self.db, "test-operator")}
 
     def tearDown(self):
         self.client.close(); self.db.close(); self.engine.dispose()
@@ -121,7 +122,7 @@ class TriageTests(unittest.TestCase):
         for headers in ({}, {"Authorization": "Bearer demo-token-operador"}):
             self.assertEqual(self.save([0], headers=headers).status_code, 401)
             self.assertEqual(self.client.get("/api/v1/meta/triage-comments", headers=headers).status_code, 401)
-        headers = {"Authorization": "Bearer " + create_access_token({"sub": "test-secretary"})}
+        headers = {"Authorization": "Bearer " + fixture_token(self.db, "test-secretary")}
         self.assertEqual(self.save([0], headers=headers).status_code, 403)
         self.assertEqual(self.db.query(Case).count(), 0)
 
@@ -130,10 +131,14 @@ class TriageTests(unittest.TestCase):
         for payload in ({"comments": []}, {"comments": [reference] * 101}, {"comments": [reference], "assigned_department": "invented"}):
             self.assertEqual(self.client.post("/api/v1/triage/consolidate", json=payload, headers=self.headers).status_code, 422)
 
-    def test_deleting_case_preserves_capture_and_cascades_links(self):
+    def test_audited_case_cannot_be_deleted_and_keeps_capture_and_links(self):
+        from sqlalchemy.exc import IntegrityError
         case_id = self.save([0]).json()["case_id"]
-        self.db.delete(self.db.get(Case, case_id)); self.db.commit()
-        self.assertEqual(self.db.query(CaseComment).count(), 0)
+        with self.assertRaises(IntegrityError):
+            self.db.delete(self.db.get(Case, case_id)); self.db.commit()
+        self.db.rollback()
+        self.assertIsNotNone(self.db.get(Case, case_id))
+        self.assertEqual(self.db.query(CaseComment).count(), 1)
         self.assertEqual(json.loads(self.db.get(MetaPost, "test-post").raw_comments_json), self.comments)
 
 

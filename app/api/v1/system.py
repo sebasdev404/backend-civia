@@ -1,85 +1,56 @@
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
-from sqlalchemy import text
-from datetime import datetime
 import time
-
+from datetime import datetime,timezone
+from fastapi import APIRouter,Depends,Query,HTTPException
+from sqlalchemy import text,func
+from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.config import settings
+from app.core.authentication import get_current_user
+from app.models.case import Case
+from app.models.user import User
+from app.models.operations import AuditEvent,WebhookEvent
+from app.services.email_service import smtp_is_configured
 
-router = APIRouter(prefix="/system", tags=["Diagnóstico y Salud del Sistema"])
+router=APIRouter(prefix='/system',tags=['Diagnóstico y auditoría'])
+_started=time.monotonic()
 
-@router.get("/diagnostics")
-def get_system_diagnostics(db: Session = Depends(get_db)):
-    """
-    Ejecuta un diagnóstico real en vivo de los componentes de CIVIA:
-    - Realiza un ping a PostgreSQL y mide la latencia real en milisegundos.
-    - Cuenta los registros reales en las tablas de casos y usuarios.
-    - Verifica el estado del backend FastAPI.
-    - Comprueba la integración con Meta (tokens de Facebook / Instagram).
-    - Comprueba la configuración del motor de IA (OpenAI).
-    """
-    # 1. Prueba en vivo de PostgreSQL
-    t0 = time.time()
+
+@router.get('/diagnostics')
+def diagnostics(db:Session=Depends(get_db)):
+    started=time.perf_counter()
     try:
-        db.execute(text("SELECT 1"))
-        cases_count = db.execute(text("SELECT COUNT(*) FROM cases")).scalar() or 0
-        users_count = db.execute(text("SELECT COUNT(*) FROM users")).scalar() or 0
-        db_latency_ms = round((time.time() - t0) * 1000, 1)
-        db_status = "Operativo"
-        db_detail = f"Cluster PostgreSQL local (civia_db:5432). {cases_count} casos e incidentes y {users_count} funcionarios en base de datos."
-    except Exception as e:
-        db_latency_ms = 0
-        db_status = "Degradado"
-        db_detail = f"Error conectando a base de datos: {str(e)}"
-        cases_count = 0
-        users_count = 0
+        db.execute(text('SELECT 1'))
+        cases=db.query(Case).count();users=db.query(User).count()
+        postgres={'status':'Operativo','latency_ms':round((time.perf_counter()-started)*1000,2),'cases_count':cases,'users_count':users,'detail':'Consulta y conteos realizados en la base configurada.'}
+    except Exception:
+        db.rollback();postgres={'status':'No disponible','latency_ms':None,'cases_count':None,'users_count':None,'detail':'La consulta a la base no pudo completarse.'}
+    configured=lambda value:'Configurada; sin verificación en línea' if value else 'No configurada'
+    return {'timestamp':datetime.now(timezone.utc).isoformat(),
+        'postgres':postgres,
+        'backend':{'status':'Operativo','version':settings.VERSION,'uptime_seconds':round(time.monotonic()-_started),'detail':'Esta respuesta fue generada por la API. No se calcula un porcentaje de disponibilidad.'},
+        'meta':{'status':configured(bool(settings.META_PAGE_ACCESS_TOKEN)),'page_id':settings.META_PAGE_ID,'detail':'Tener credenciales configuradas no acredita vigencia, permisos ni recepción del webhook.'},
+        'ai':{'status':configured(bool(settings.OPENAI_API_KEY)),'model':'gpt-4o-mini','detail':'El análisis utiliza el modelo configurado cuando se solicita. No se ha medido conexión ni gasto en esta consulta.'},
+        'smtp':{'status':'Configurado; envío pendiente de verificar' if smtp_is_configured() else 'No configurado','detail':'La recuperación requiere proveedor, remitente y credenciales SMTP privados.'}}
 
-    # 2. Backend FastAPI
-    backend_status = "Operativo (v1.0)"
-    backend_detail = f"Servicio FastAPI/Uvicorn ASGI en puerto 8000. Python 3.14 con 8 módulos de API activos."
 
-    # 3. Conector Meta
-    has_meta_token = bool(settings.META_PAGE_ACCESS_TOKEN and len(settings.META_PAGE_ACCESS_TOKEN) > 20)
-    meta_status = "Listo / Escucha" if has_meta_token else "Token no configurado"
-    meta_detail = (
-        f"Página Meta ID: {settings.META_PAGE_ID}. Webhook HTTPS sincronizado con publicaciones y comentarios de redes."
-        if has_meta_token
-        else "Token de Meta pendiente de configurar en .env"
-    )
+@router.get('/audit')
+def audit(limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),db:Session=Depends(get_db)):
+    query=db.query(AuditEvent)
+    return {'total':query.count(),'items':[{key:getattr(row,key) for key in ('id','actor_id','actor_name','action','target_id','details','created_at')} for row in query.order_by(AuditEvent.created_at.desc(),AuditEvent.id.desc()).offset(offset).limit(limit)]}
 
-    # 4. Motor de IA
-    has_openai = bool(settings.OPENAI_API_KEY and len(settings.OPENAI_API_KEY) > 15)
-    ai_status = "Entrenado" if has_openai else "Simulación local"
-    ai_detail = (
-        "Modelo OpenAI GPT-4o activo con diccionario geográfico de las 10 comunas de Neiva para clasificación automática."
-        if has_openai
-        else "Diccionario geográfico en modo heurístico local."
-    )
 
-    return {
-        "timestamp": datetime.utcnow().strftime("%I:%M:%S %p"),
-        "postgres": {
-            "status": db_status,
-            "latency_ms": db_latency_ms,
-            "detail": db_detail,
-            "cases_count": cases_count,
-            "users_count": users_count,
-        },
-        "backend": {
-            "status": backend_status,
-            "version": "1.0.0",
-            "uptime": "99.98%",
-            "detail": backend_detail,
-        },
-        "meta": {
-            "status": meta_status,
-            "page_id": settings.META_PAGE_ID,
-            "detail": meta_detail,
-        },
-        "ai": {
-            "status": ai_status,
-            "model": "OpenAI GPT-4o",
-            "detail": ai_detail,
-        },
-    }
+@router.get('/webhooks')
+def webhooks(limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),db:Session=Depends(get_db)):
+    return {'counts':dict(db.query(WebhookEvent.status,func.count(WebhookEvent.id)).group_by(WebhookEvent.status).all()),'items':[{key:getattr(row,key) for key in ('id','status','attempts','error','received_at','processed_at')} for row in db.query(WebhookEvent).order_by(WebhookEvent.received_at.desc()).offset(offset).limit(limit)]}
+
+
+@router.post('/webhooks/{event_id}/retry')
+def retry_webhook(event_id:str,db:Session=Depends(get_db),actor=Depends(get_current_user)):
+    from app.services.audit import record
+    event=db.query(WebhookEvent).filter_by(id=event_id).with_for_update().first()
+    if not event:raise HTTPException(404,'Evento no encontrado.')
+    if event.status in ('processed','queued'):raise HTTPException(409,'El evento ya está procesado o pendiente.')
+    event.status='queued';event.attempts=0;event.error=None
+    record(db,actor,'webhook_retried',event.id)
+    db.commit()
+    return {'status':'queued'}

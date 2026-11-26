@@ -165,7 +165,7 @@ def parse_contact_file(content: bytes, filename: str):
             workbook.close()
 
 
-def import_contacts(db: Session, parsed: dict, *, preview=False):
+def import_contacts(db: Session, parsed: dict, *, preview=False, actor=None):
     """Exact identifiers only. One transaction; repeat imports do not create duplicates."""
     existing = db.query(Citizen).all()
     by_phone, by_username = {}, {}
@@ -237,6 +237,8 @@ def import_contacts(db: Session, parsed: dict, *, preview=False):
                     setattr(citizen, field, row[field])
             citizen.source_data = source
     if not preview:
+        from app.services.audit import record
+        record(db,actor,'contacts_imported',**counts)
         db.commit()
     return {
         "success": True, "preview": preview, "summary": counts,
