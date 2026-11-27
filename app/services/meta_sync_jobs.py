@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="civia-sync")
 _start_lock = threading.Lock()
 TERMINAL = {"success", "partial", "failed", "interrupted"}
+ANALYSIS_RETRY_DELAY = timedelta(minutes=5)
 
 
 def job_data(job):
@@ -26,6 +27,24 @@ def job_data(job):
 
 def latest_job(db, scope="connected"):
     return db.query(MetaSyncJob).filter(MetaSyncJob.scope == scope).order_by(MetaSyncJob.created_at.desc()).first()
+
+
+def queue_pending_analysis(db):
+    from app.services.conversation import ai_classifier, pending_by_post
+
+    if not settings.AUTO_ANALYZE_ENABLED or ai_classifier.client is None:
+        return
+    last = latest_job(db, "analysis")
+    if last and last.active_key:
+        return
+    if last and last.status in {"failed", "partial", "interrupted"} and last.updated_at:
+        updated_at = last.updated_at
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) - updated_at < ANALYSIS_RETRY_DELAY:
+            return
+    if next(pending_by_post(db), None) is not None:
+        start_job(db, "analysis")
 
 
 def recover_jobs(db):
@@ -86,7 +105,7 @@ def _run(job_id, scope):
             elif scope == "analysis":
                 from app.services.conversation import analyze_pending
                 progress(stage="analysis", detail="Analizando comentarios por separado de la captura de publicaciones")
-                result = {"status": "success", **analyze_pending(db, limit=20)}
+                result = analyze_pending(db, limit=20)
             elif scope.startswith("source:"):
                 from app.services.publications import sync_external
                 result = sync_external(db, scope.split(":", 1)[1], progress)
@@ -106,9 +125,6 @@ def _run(job_id, scope):
             job.status, job.error = "failed", "No se pudo completar la actualización. Se conservan los datos capturados anteriormente."
         job.active_key = None
         db.commit()
-        if scope == "connected" and job.status in {"success", "partial"} and settings.AUTO_ANALYZE_ENABLED:
-            # La captura ya está terminada y visible antes de poner la IA en su propia cola.
-            start_job(db, "analysis")
 
 
 def start_job(db, scope="connected"):

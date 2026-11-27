@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.api.v1.auth import get_current_user
@@ -15,7 +15,9 @@ from app.api.v1.conversation import router
 from app.core.database import Base, get_db
 from app.models.meta_post import MetaPost
 from app.models.conversation import PostContext, CommentAnalysis
+from app.models.publication import MetaSyncJob
 from app.services import conversation as svc
+from app.services import meta_sync_jobs as jobs
 from app.services.ai_classifier import AIClassifierService
 
 
@@ -71,6 +73,7 @@ class ConversationTests(unittest.TestCase):
         data = self.client.get("/conversation").json()
         self.assertEqual(data["summary"]["captured"], 3)
         self.assertEqual(data["summary"]["review"], 3)
+        self.assertEqual(data["summary"]["pending_with_context"], 0)
         self.assertEqual(data["summary"]["stances"], {})
 
     def test_anger_in_support_is_not_criticism_and_parent_is_supplied(self):
@@ -130,6 +133,55 @@ class ConversationTests(unittest.TestCase):
             response = self.client.post("/conversation/analyze")
         self.assertEqual(response.json()["processed"], 0)
         self.assertEqual(self.db.query(CommentAnalysis).count(), 0)
+
+    def test_automatic_queue_processes_existing_comments_in_bounded_batches(self):
+        comments = svc.captured_comments(self.post)
+        comments.extend({"id": f"fixture-{index}", "content": "Comentario de prueba"} for index in range(20))
+        self.post.raw_comments_json = json.dumps(comments)
+        self.db.commit()
+
+        def classify(context, batch, client):
+            return {comment["id"]: result() for comment in batch}
+
+        with patch.object(jobs.settings, "AUTO_ANALYZE_ENABLED", True), \
+             patch.object(jobs, "SessionLocal", sessionmaker(bind=self.engine)), \
+             patch.object(jobs._executor, "submit", side_effect=lambda run, *args: run(*args)), \
+             patch.object(svc, "classify_batch", side_effect=classify) as provider:
+            jobs.queue_pending_analysis(self.db)
+            provider.assert_not_called()
+            self.context()
+            data = self.client.get("/conversation").json()
+            self.assertTrue(data["automatic_analysis"])
+            self.assertEqual(data["summary"]["pending_with_context"], 23)
+
+            with patch.object(jobs.settings, "AUTO_ANALYZE_ENABLED", False):
+                jobs.queue_pending_analysis(self.db)
+                provider.assert_not_called()
+
+            jobs.queue_pending_analysis(self.db)
+            self.assertEqual(self.db.query(CommentAnalysis).count(), 20)
+            self.assertEqual(provider.call_count, 4)
+            self.assertEqual(self.client.get("/conversation").json()["analysis_status"], "success")
+
+            jobs.queue_pending_analysis(self.db)
+            self.assertEqual(self.db.query(CommentAnalysis).count(), 23)
+            jobs.queue_pending_analysis(self.db)
+            self.assertEqual(provider.call_count, 5)
+            self.assertEqual(self.db.query(MetaSyncJob).count(), 2)
+
+    def test_automatic_queue_waits_after_provider_failure(self):
+        self.context()
+        with patch.object(jobs.settings, "AUTO_ANALYZE_ENABLED", True), \
+             patch.object(jobs, "SessionLocal", sessionmaker(bind=self.engine)), \
+             patch.object(jobs._executor, "submit", side_effect=lambda run, *args: run(*args)), \
+             patch.object(svc, "classify_batch", side_effect=RuntimeError("offline")) as provider:
+            jobs.queue_pending_analysis(self.db)
+            self.db.expire_all()
+            data = self.client.get("/conversation").json()
+            self.assertEqual(data["analysis_status"], "failed")
+            self.assertEqual(data["summary"]["pending_with_context"], 3)
+            jobs.queue_pending_analysis(self.db)
+            provider.assert_called_once()
 
     def test_bad_inputs_and_instagram_context_are_rejected(self):
         for payload in ({}, {"summary": "  "}, {"summary": "x" * 6001}, {"transcript": "x" * 24001}):

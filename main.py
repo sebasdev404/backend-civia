@@ -44,6 +44,22 @@ async def periodic_meta_sync_loop():
         # Esperar 3 minutos entre sincronizaciones automáticas
         await asyncio.sleep(180)
 
+
+async def periodic_conversation_analysis_loop():
+    from app.services.meta_sync_jobs import queue_pending_analysis
+
+    def queue():
+        with SessionLocal() as db:
+            queue_pending_analysis(db)
+
+    while True:
+        try:
+            await asyncio.to_thread(queue)
+        except Exception:
+            logger.warning('No se pudo programar el análisis automático de opinión.')
+        await asyncio.sleep(60)
+
+
 async def inbox_loop():
     from app.services.webhooks import process_pending
     while True:
@@ -86,6 +102,7 @@ async def lifespan(app: FastAPI):
             ensure_sources(db)
         tasks=[asyncio.create_task(inbox_loop())]
         if settings.AUTO_SYNC_ENABLED:tasks.append(asyncio.create_task(periodic_meta_sync_loop()))
+        if settings.AUTO_ANALYZE_ENABLED:tasks.append(asyncio.create_task(periodic_conversation_analysis_loop()))
         yield
     finally:
         for task in locals().get('tasks',[]):task.cancel()

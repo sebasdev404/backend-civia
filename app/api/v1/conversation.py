@@ -2,9 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 from app.api.v1.auth import get_current_user
+from app.core.config import settings
 from app.core.database import get_db
 from app.models.conversation import PostContext
 from app.services.conversation import analyze_pending, context_for, facebook_posts, overview
+from app.services.meta_sync_jobs import latest_job
 
 router = APIRouter(prefix="/conversation", tags=["Conversación Facebook"], dependencies=[Depends(get_current_user)])
 
@@ -34,8 +36,11 @@ def get_overview(month: str | None = None, post_id: str | None = None,
                  topic: str | None = None, narrative: str | None = None,
                  search: str | None = Query(None, max_length=200), offset: int = Query(0, ge=0),
                  limit: int = Query(30, ge=1, le=100), db: Session = Depends(get_db)):
-    return overview(db, month=month, post_id=post_id, stance=stance, topic=topic,
+    data = overview(db, month=month, post_id=post_id, stance=stance, topic=topic,
                     narrative=narrative, search=search, offset=offset, limit=limit)
+    job = latest_job(db, "analysis") if settings.AUTO_ANALYZE_ENABLED else None
+    return {**data, "automatic_analysis": settings.AUTO_ANALYZE_ENABLED,
+            "analysis_status": job.status if job else "idle"}
 
 
 @router.get("/posts/{post_id}/context")

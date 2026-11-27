@@ -158,6 +158,7 @@ def build_rows(db, posts):
 
 def overview(db, *, month=None, post_id=None, stance=None, topic=None, narrative=None, search=None, offset=0, limit=30):
     rows, posts = build_rows(db, facebook_posts(db, month, post_id))
+    pending_rows = [r for r in rows if r["status"] == "pending"]
     classified = [r for r in rows if r["status"] == "analyzed" and not r["needs_review"]]
     counts = Counter(r["stance"] for r in classified)
     themes = Counter((r["topic"], r["narrative"]) for r in classified)
@@ -172,7 +173,8 @@ def overview(db, *, month=None, post_id=None, stance=None, topic=None, narrative
         term = search.casefold().strip()
         selected = [r for r in selected if term in (r["content"] + " " + r["post_title"]).casefold()]
     return {"summary": {"captured": len(rows), "analyzed": sum(r["status"] == "analyzed" for r in rows),
-                        "pending": sum(r["status"] == "pending" for r in rows),
+                        "pending": len(pending_rows),
+                        "pending_with_context": sum(r["context_source"] != "missing" for r in pending_rows),
                         "review": sum(r["needs_review"] for r in rows), "stances": dict(counts),
                         "anger_in_support": sum(r["stance"] == "support" and r["emotion"] == "Enojo o ira" for r in classified),
                         "reported": sum(p["reported"] for p in posts),
@@ -213,16 +215,14 @@ def analyze_pending(db, *, post_id=None, month=None, limit=20):
         _ANALYSIS_LOCK.release()
 
 
-def _analyze_pending(db, *, post_id=None, month=None, limit=20):
-    if ai_classifier.client is None:
-        return {"processed": 0, "detail": "La IA no está disponible. Los comentarios conservan su estado pendiente."}
+def pending_by_post(db, *, post_id=None, month=None):
     posts = facebook_posts(db, month, post_id)
     ids = [p.id for p in posts]
     saved_contexts = {c.post_id: c for c in db.query(PostContext).filter(PostContext.post_id.in_(ids))}
     saved = {(a.post_id, a.comment_id): a for a in db.query(CommentAnalysis).filter(CommentAnalysis.post_id.in_(ids))}
-    processed = 0
     for post in posts:
-        context = context_for(post, saved_contexts.get(post.id))
+        identity = post.id
+        context = context_for(post, saved_contexts.get(identity))
         if not context["ready"]:
             continue
         comments = captured_comments(post)
@@ -230,24 +230,32 @@ def _analyze_pending(db, *, post_id=None, month=None, limit=20):
         todo = []
         for comment in comments:
             parent = by_id.get(str(comment.get("parent_id")))
-            stored = saved.get((post.id, comment["id"]))
+            stored = saved.get((identity, comment["id"]))
             if analysis_for(context, comment, parent, stored)["status"] == "pending":
-                todo.append({"id": comment["id"], "content": comment["content"], "parent": parent,
-                             "parent_id": comment.get("parent_id")})
+                todo.append(({"id": comment["id"], "content": comment["content"], "parent": parent,
+                              "parent_id": comment.get("parent_id")}, stored))
+        if todo:
+            yield identity, context, todo
+
+
+def _analyze_pending(db, *, post_id=None, month=None, limit=20):
+    if ai_classifier.client is None:
+        return {"status": "failed", "processed": 0, "detail": "La IA no está disponible. Los comentarios conservan su estado pendiente."}
+    processed = 0
+    for identity, context, todo in pending_by_post(db, post_id=post_id, month=month):
         # Lotes pequeños con escritura por lote; reintentar no vuelve a cobrar lo ya guardado.
         todo = todo[:limit - processed]
         for start in range(0, len(todo), 5):
             batch = todo[start:start + 5]
             try:
-                results = classify_batch(context, batch, ai_classifier.client)
+                results = classify_batch(context, [comment for comment, _ in batch], ai_classifier.client)
             except Exception as exc:
                 logger.warning("No se pudo completar el análisis contextual (%s); se conserva pendiente", type(exc).__name__)
-                return {"processed": processed, "detail": "La IA no completó el lote. Los comentarios restantes siguen pendientes; puedes reintentar."}
-            for comment in batch:
-                key = (post.id, comment["id"])
-                record = saved.get(key)
+                return {"status": "partial" if processed else "failed", "processed": processed,
+                        "detail": "La IA no completó el lote. Los comentarios restantes siguen pendientes; puedes reintentar."}
+            for comment, record in batch:
                 if record is None:
-                    record = CommentAnalysis(post_id=post.id, comment_id=comment["id"])
+                    record = CommentAnalysis(post_id=identity, comment_id=comment["id"])
                     db.add(record)
                 record.fingerprint = fingerprint(context, comment, comment["parent"])
                 record.result_json = json.dumps(results[comment["id"]], ensure_ascii=False)
@@ -255,4 +263,6 @@ def _analyze_pending(db, *, post_id=None, month=None, limit=20):
             processed += len(batch)
         if processed >= limit:
             break
-    return {"processed": processed, "detail": f"Se analizaron {processed} comentarios con el contexto de su publicación."}
+    detail = (f"Se analizaron {processed} comentarios con el contexto de su publicación." if processed
+              else "No hay comentarios pendientes con contexto suficiente en esta selección.")
+    return {"status": "success", "processed": processed, "detail": detail}
