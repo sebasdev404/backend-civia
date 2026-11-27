@@ -94,7 +94,7 @@ async def lifespan(app: FastAPI):
         verify_schema(coordinator)
         if coordinator.dialect.name=='postgresql':
             if not coordinator.execute(text('SELECT pg_try_advisory_lock(1128879681)')).scalar():
-                raise RuntimeError('Ya hay un coordinador de CIVIA activo. Este despliegue admite un proceso API.')
+                raise RuntimeError('Ya hay un coordinador de Ordenemos a Neiva activo. Este despliegue admite un proceso API.')
             locked=True
             coordinator.commit()
         with SessionLocal() as db:
@@ -114,7 +114,7 @@ async def lifespan(app: FastAPI):
     # Iniciar auto-sync en segundo plano
 
 app = FastAPI(
-    title="CIVIA API",
+    title="Ordenemos a Neiva API",
     description="Plataforma de Inteligencia Ciudadana y Política",
     version="1.0.0",
     lifespan=lifespan
@@ -153,7 +153,7 @@ async def operational_headers(request,call_next):
 
 @app.get("/")
 def read_root():
-    return {"message": "¡Bienvenido a la API de CIVIA!"}
+    return {"message": "¡Bienvenido a la API de Ordenemos a Neiva!"}
 
 @app.get("/health")
 def health_check():

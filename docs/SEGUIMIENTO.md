@@ -1,10 +1,12 @@
-# CIVIA — seguimiento de desarrollo
+# Ordenemos a Neiva — seguimiento de desarrollo
 
-Actualizado: **25 de noviembre de 2026**.
+Actualizado: **26 de noviembre de 2026**.
 
 Este archivo es la lista central de avance. Una tarea terminada se marca `[x]` y se tacha con `~~texto~~`. Las tareas parciales permanecen abiertas. «Terminado» significa implementado y comprobado en el alcance indicado; no implica aprobación para producción ni publicación en GitHub.
 
 ## Desarrollado y comprobado
+
+- [x] ~~Cambiar el nombre visible del software a Ordenemos a Neiva.~~ Navegación, acceso, ayuda, avisos, correos de seguridad e informes usan la nueva marca y el logo existente. Se conservan los IDs de expedientes, las claves técnicas de sesión, las rutas de repositorios y la evidencia histórica para mantener compatibilidad y trazabilidad. Validación local: build de producción y lint sin errores; 244 pruebas de backend (1 omitida) y 84 comprobaciones de marca y ajuste visual en navegador, con base temporal aislada. No se enviaron correos ni se modificaron expedientes reales para estas comprobaciones.
 
 - [x] ~~Integrar la captura de publicaciones y comentarios de Facebook e Instagram mediante Meta.~~ Implementado; la disponibilidad depende de los permisos y del estado de cada fuente. No implica cobertura total del histórico.
 - [x] ~~Separar captura de Meta y análisis en trabajos en segundo plano, con consulta de avance.~~ Implementado en el código actual; falta validar operación y recuperación en el despliegue de producción.
@@ -60,18 +62,23 @@ Este archivo es la lista central de avance. Una tarea terminada se marca `[x]` y
 
 ## 3. Seguridad y sesiones
 
+- [x] ~~Preparar Gmail para añadir o cambiar después el remitente sin modificar código.~~ Host, puerto y TLS configurables. Ver [configuración y cambio de correo](CORREO_GMAIL.md).
+- [x] ~~Configurar la cuenta temporal y su contraseña de aplicación en el entorno privado.~~ Gmail aceptó conexión TLS y autenticación SMTP. Correo del Administrador actualizado con autorización, accesos anteriores revocados y nuevo inicio de sesión comprobado. No se publicaron credenciales ni se enviaron mensajes de prueba.
+- [x] ~~Aplicar a los correos de seguridad el logo, lema y colores actuales de la plataforma.~~ Recuperación y aviso de cambio de clave con «Ordenemos a Neiva», paleta negra/verde/dorada y logo PNG idéntico al acceso, adjunto por Content-ID. Retirado Ordenemos a Neiva de asunto, remitente y contenido visible. 39 pruebas de recuperación/sesiones/operación y ocho comprobaciones visuales entre 320 y 1440 px aprobadas; sin envíos de prueba.
+- [ ] Confirmar los buzones reales de los demás usuarios y comprobar recepción del código y restablecimiento completo. Autenticación SMTP correcta no acredita llegada a la bandeja del destinatario.
+
 - [x] ~~Retirar acceso automático, accesos de un clic, cambio de rol de presentación y aceptación de `demo-token-*`.~~ La pantalla espera la validación del servidor; no hay acceso local alternativo. Las cuentas existentes se conservan y requieren revisión de titulares y claves. Ver [alcance, permisos y evidencia](SEGURIDAD_SESIONES_20261125.md).
 - [x] ~~Manejar sesión vencida o inválida: cerrar la sesión visual y permitir iniciar sesión nuevamente con un mensaje claro.~~ Regreso a la ruta original, reintento ante fallo de red y tratamiento separado de 401/403. 23 comprobaciones de navegador y 10 del cliente aprobadas; privacidad y eliminación de datos permanecen públicas.
 - [x] ~~Aplicar autenticación y permisos por rol de forma uniforme a las rutas sensibles publicadas.~~ Política central, rol vigente consultado en PostgreSQL, administración solo ADMIN y actor real en notas/asignaciones/cierres. Inventario de operaciones protegido con pruebas; imágenes públicas y entradas de autenticación/webhook son excepciones explícitas.
 - [x] ~~Deshabilitar seed y simulación de comentarios en la API publicada.~~ Responden 410 también para ADMIN; no se cargaron ni eliminaron datos históricos.
 - [x] ~~Validar la firma de eventos POST del webhook antes de procesarlos.~~ HMAC sobre el cuerpo original; sin registrar secretos. Se retiró la exposición del OTP y el falso éxito de envío de recuperación.
 - [x] ~~Completar deduplicación, procesamiento diferido y límites compartidos del webhook.~~ Bandeja PostgreSQL, firma, deduplicación, reintentos y límites probados; recepción real en el dominio definitivo pendiente.
-- [ ] Confirmar titulares/correos/departamentos y cambiar las credenciales iniciales de las cuentas históricas. Configurar y probar SMTP; el entorno actual no lo tiene configurado.
+- [ ] Confirmar titulares/correos/departamentos y cambiar las credenciales iniciales de las cuentas históricas. SMTP local configurado y autenticado; falta completar validación operativa y configuración del destino de producción.
 - [x] ~~Proteger la sesión con cookie HttpOnly/Secure y revocación en el servidor.~~ Intermediario Next, registros de sesión, cierre actual o de todos y cambio/restablecimiento que invalida accesos anteriores. Mi cuenta y seguridad disponible para los cuatro roles. 27 pruebas de backend, 10 del intermediario y 14 de navegador aislado aprobadas; tipos, lint y build correctos. Backend local activado, usuarios y datos de negocio intactos. Ver [funcionamiento y límites](SEGURIDAD_SESIONES_20261125.md#mi-cuenta-y-revocación).
 - [x] ~~Proteger OTP en almacenamiento y uniformar las respuestas de recuperación.~~ HMAC con nonce y vínculo a la cuenta/contraseña, 15 minutos, cinco errores, uso único y reenvío que sustituye el anterior. Mensajes condicionales iguales y búsqueda/envío posteriores a la respuesta. Sin SMTP, 503 igual para todos; envío real pendiente. Ver [funcionamiento y comprobaciones](SEGURIDAD_SESIONES_20261125.md#recuperación-y-configuración).
 - [x] ~~Aplicar límites de autenticación compartidos entre procesos.~~ Contadores atómicos en PostgreSQL por conexión y por correo normalizado, Retry-After y claves HMAC. 40 pruebas de backend, ensayo PostgreSQL en tabla temporal y 12 comprobaciones de navegador aprobados; no se enviaron correos reales.
 - [ ] Confirmar duración definitiva y retención de sesiones; configurar límites por IP real en el acceso público y la operación/reintentos del envío de correo. El intermediario concentra las conexiones a FastAPI; no sustituye el control por IP original en el proxy público.
-- [x] ~~Confirmar el alcance de consulta por dependencia para Secretarías.~~ El usuario confirmó todos los expedientes de CIVIA; alcance global y permisos de actuación por rol.
+- [x] ~~Confirmar el alcance de consulta por dependencia para Secretarías.~~ El usuario confirmó todos los expedientes de Ordenemos a Neiva; alcance global y permisos de actuación por rol.
 - [x] ~~Implementar historial estructurado de las actuaciones de atención.~~ Creación manual o desde comentarios, vínculos, asignación, avances, borradores, decisiones y cierre conservan usuario, fecha y campos anteriores/posteriores en la misma transacción. No se inventaron eventos históricos. Ver [flujo y comprobaciones](FLUJO_ATENCION_20261125.md).
 - [x] ~~Extender la auditoría estructurada a administración de cuentas, contactos y operaciones del sistema.~~ Actor, motivo cuando corresponde y trazabilidad; consulta en /audit sin credenciales.
 

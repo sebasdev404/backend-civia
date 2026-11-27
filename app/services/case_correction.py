@@ -83,7 +83,7 @@ def correct(db, payload, user):
         case.status = "No requiere gestión" if no_request else "Pendiente"
         case.requires_followup = not no_request
         now = datetime.now(timezone.utc)
-        note = f"[{now.isoformat(timespec='seconds')}] [Corrección CIVIA por {user.id}]: Asignación de prueba retirada. "
+        note = f"[{now.isoformat(timespec='seconds')}] [Corrección Ordenemos a Neiva por {user.id}]: Asignación de prueba retirada. "
         note += ("Opinión general sin solicitud concreta, según revisión humana. " if no_request else "Pendiente de revisión de la solicitud. ") + payload.reason
         case.internal_notes = (case.internal_notes or "") + "\n" + note
         record = CaseCorrection(id=str(payload.request_id), case_id=case.id, disposition=payload.disposition,
@@ -112,7 +112,7 @@ def undo(db, operation_id, reason, user):
         for field in CHANGED_FIELDS:
             setattr(case, field, record.evidence_json["before"][field])
         now = datetime.now(timezone.utc)
-        case.internal_notes += f"\n[{now.isoformat(timespec='seconds')}] [Reversión de corrección CIVIA por {user.id}]: {reason}"
+        case.internal_notes += f"\n[{now.isoformat(timespec='seconds')}] [Reversión de corrección Ordenemos a Neiva por {user.id}]: {reason}"
         record.undone_at, record.undone_by, record.undo_reason = now, user.id, reason
         db.commit()
         return public_record(record)

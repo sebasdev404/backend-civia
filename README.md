@@ -1,4 +1,4 @@
-# CIVIA — API y operación
+# Ordenemos a Neiva — API y operación
 
 Proyecto independiente de escucha y gestión ciudadana en Neiva. Organiza publicaciones y comentarios de Meta, análisis sujetos a revisión y expedientes de atención. No acredita radicación oficial, envío de respuestas o recepción de una solicitud por otra entidad.
 
@@ -31,6 +31,7 @@ Las pruebas de integración de lectura necesitan PostgreSQL con el esquema actua
 - [Tareas terminadas y pendientes](docs/SEGUIMIENTO.md).
 - [Flujo de atención](docs/FLUJO_ATENCION_20261125.md).
 - [Seguridad de sesiones](docs/SEGURIDAD_SESIONES_20261125.md).
+- [Preparar y cambiar el correo de recuperación](docs/CORREO_GMAIL.md).
 - [Preparación de producción y evidencias](docs/PREPARACION_PRODUCCION_20261125.md).
 - [Despliegue, importación de datos, copias y reversión](deploy/README.md).
 

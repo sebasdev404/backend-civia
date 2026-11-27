@@ -4,6 +4,8 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
+from email import policy
+from email.parser import BytesParser
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -17,7 +19,8 @@ from app.core.security import get_password_hash
 from app.models.user import User
 from app.models.password_recovery import PasswordRecovery, AuthRateLimit
 from app.services.password_recovery import prepare_recovery
-from app.services.email_service import send_otp_email, smtp_is_configured
+from app.services.email_service import send_otp_email, send_password_changed_email, smtp_is_configured
+from app.services.email_templates import LOGO_CID
 
 
 class RecoveryTests(unittest.TestCase):
@@ -169,9 +172,36 @@ class MailTransportTests(unittest.TestCase):
             server.starttls.assert_called_once()
             message = server.send_message.call_args.args[0]
             self.assertNotIn('246810', str(message['Subject']))
-            html = message.get_payload()[1].get_payload(decode=True).decode()
+            delivered = BytesParser(policy=policy.default).parsebytes(message.as_bytes())
+            html = delivered.get_body(preferencelist=('html',)).get_content()
             self.assertIn('&lt;img src=x&gt;', html)
+            self.assertEqual(delivered.get_content_type(), 'multipart/related')
+            self.assertIn(f'cid:{LOGO_CID}', html)
+            logo = next(part for part in delivered.walk() if part.get('Content-ID') == f'<{LOGO_CID}>')
+            self.assertEqual(logo.get_content_type(), 'image/png')
+            self.assertEqual(logo.get_content_disposition(), 'inline')
+            self.assertTrue(logo.get_payload(decode=True).startswith(b'\x89PNG\r\n\x1a\n'))
+            self.assertIn('Ordenemos a Neiva', delivered['From'])
+            self.assertIn('#151515', html)
+            self.assertIn('#f3cc52', html)
+            self.assertNotIn('CIVIA', html)
+            self.assertNotIn('CIVIA', delivered['Subject'])
+            self.assertNotIn('CIVIA', delivered.get_body(preferencelist=('plain',)).get_content())
+            self.assertNotIn('http://', html); self.assertNotIn('https://', html)
             self.assertNotIn('246810', str(logs.output)); self.assertNotIn('recipient@recovery.invalid', str(logs.output))
+
+    def test_password_change_notice_uses_the_same_brand_and_embedded_logo(self):
+        with patch.multiple(settings, SMTP_HOST='smtp.fixture.invalid', SMTP_USER='fixture', SMTP_PASSWORD='fixture-secret', SMTP_FROM_EMAIL='fixture@recovery.invalid', SMTP_PORT=587, SMTP_TLS=True, SMTP_SSL=False), patch('app.services.email_service.smtplib.SMTP') as transport:
+            server = transport.return_value.__enter__.return_value
+            server.send_message.return_value = {}
+            self.assertTrue(send_password_changed_email('recipient@recovery.invalid', '<script>unsafe</script>'))
+            message = BytesParser(policy=policy.default).parsebytes(server.send_message.call_args.args[0].as_bytes())
+            html = message.get_body(preferencelist=('html',)).get_content()
+            self.assertIn('&lt;script&gt;unsafe&lt;/script&gt;', html)
+            self.assertNotIn('<script>', html)
+            self.assertIn('Ordenemos a Neiva', message['Subject'])
+            self.assertIn(f'cid:{LOGO_CID}', html)
+            self.assertNotIn('CIVIA', html)
 
 
 if __name__ == '__main__': unittest.main()

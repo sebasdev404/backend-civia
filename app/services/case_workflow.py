@@ -62,7 +62,7 @@ def record(db, case, user, kind, note, before, evidence=None):
     stamp = datetime.now(timezone.utc).isoformat(timespec='seconds')
     safe_note = note.replace('[', '［').replace(']', '］').replace('\r', '').replace('\n', ' / ')
     safe_actor = user.full_name.replace('[', '［').replace(']', '］').replace('\n', ' ')
-    entry = f'[{stamp}] [CIVIA {kind} por {safe_actor} / {user.id}]: {safe_note}'
+    entry = f'[{stamp}] [Ordenemos a Neiva {kind} por {safe_actor} / {user.id}]: {safe_note}'
     case.internal_notes = ((case.internal_notes or '') + '\n' + entry).strip()
     return event
 

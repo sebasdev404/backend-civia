@@ -131,7 +131,7 @@ def get_ai_credits_info(db: Session = Depends(get_db)):
         'masked_key':'Configurada' if settings.OPENAI_API_KEY else 'No configurada',
         'budget_source':'manual_record' if item else 'unavailable',
         'billing_url':'https://platform.openai.com/settings/organization/billing/overview',
-        'detail':'El presupuesto es una declaraci\u00f3n administrativa. CIVIA no consulta el saldo del proveedor ni estima gasto a partir del n\u00famero de casos.'}
+        'detail':'El presupuesto es una declaraci\u00f3n administrativa. Ordenemos a Neiva no consulta el saldo del proveedor ni estima gasto a partir del n\u00famero de casos.'}
 
 
 class BalanceSyncRequest(BaseModel):

@@ -1,4 +1,4 @@
-# CIVIA: estructura, funcionamiento y pendientes
+# Ordenemos a Neiva: estructura, funcionamiento y pendientes
 
 Fecha de revisión: **25 de noviembre de 2026**.
 
@@ -18,9 +18,9 @@ La [adaptación de pantallas](RESPONSIVE_20261124.md) registra la corrección po
 
 Este es el documento central del proyecto. Describe el código inspeccionado, no una certificación de funcionamiento en producción. La entrega del 24/11/2026 se publicó en ambos repositorios; consultar `SEGUIMIENTO.md` y el historial Git para distinguirla de cambios posteriores. La revisión documental inicial no consultó Meta ni ejecutó análisis de pago; las verificaciones posteriores de procedencia se documentan por separado.
 
-## 1. Qué es CIVIA
+## 1. Qué es Ordenemos a Neiva
 
-CIVIA es un proyecto independiente para escuchar conversaciones públicas, organizar solicitudes ciudadanas y dar seguimiento a su atención en Neiva. El código conserva nombres de roles y textos de una demostración institucional. Eso no acredita que sea una plataforma oficial de la Alcaldía, que exista integración con sus sistemas de radicación o que una dependencia haya recibido una solicitud.
+Ordenemos a Neiva es un proyecto independiente para escuchar conversaciones públicas, organizar solicitudes ciudadanas y dar seguimiento a su atención en Neiva. El código conserva nombres de roles y textos de una demostración institucional. Eso no acredita que sea una plataforma oficial de la Alcaldía, que exista integración con sus sistemas de radicación o que una dependencia haya recibido una solicitud.
 
 Tiene tres funciones diferentes:
 

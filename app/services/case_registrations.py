@@ -21,7 +21,7 @@ def register(db, case, payload, user):
     reason = workflow.text(payload.reason,'Motivo del registro',minimum=20)
     evidence = workflow.text(payload.evidence_reference,'Soporte',minimum=5,maximum=2000)
     if number.casefold() == case.id.casefold() or any(ord(c)<32 for c in number):
-        raise HTTPException(422,'El número externo debe corresponder al documento, separado del ID interno de CIVIA.')
+        raise HTTPException(422,'El número externo debe corresponder al documento, separado del ID interno de Ordenemos a Neiva.')
     if payload.issued_on > datetime.now(timezone(timedelta(hours=-5))).date():
         raise HTTPException(422,'La fecha de radicación no puede ser futura.')
     if payload.confirmed_review is not True:
@@ -42,7 +42,7 @@ def cancel(db, case, payload, user):
         raise HTTPException(422,'Confirma que revisaste la referencia antes de retirarla.')
     rows = db.query(CaseRegistration).filter_by(case_id=case.id).order_by(CaseRegistration.created_at.desc(),CaseRegistration.id.desc()).all()
     if not rows or rows[0].cancelled_at or rows[0].number != case.institutional_radicado:
-        raise HTTPException(409,'No hay una referencia vigente registrada con soporte en CIVIA.')
+        raise HTTPException(409,'No hay una referencia vigente registrada con soporte en Ordenemos a Neiva.')
     before = workflow.snapshot(case)
     rows[0].cancelled_at,rows[0].cancelled_by,rows[0].cancellation_reason = datetime.now(timezone.utc),user.id,reason
     case.institutional_radicado = None

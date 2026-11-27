@@ -16,7 +16,7 @@ IDENTITY_NOTE = "Se muestran únicamente nombres que Meta entrega. Un nombre vis
 
 def ensure_sources(db):
     defaults = [
-        ("johan", "Johan Steed", f"https://www.facebook.com/{settings.META_PAGE_ID}", settings.META_PAGE_ID, "connected", "Publicaciones ya capturadas de las redes conectadas a CIVIA."),
+        ("johan", "Johan Steed", f"https://www.facebook.com/{settings.META_PAGE_ID}", settings.META_PAGE_ID, "connected", "Publicaciones ya capturadas de las redes conectadas a Ordenemos a Neiva."),
         ("jorge-gechem", "Jorge Andrés Gechem", "https://www.facebook.com/JorgeAndresGA", "JorgeAndresGA", "not_checked", "Fuente registrada desde el enlace aportado. El acceso debe ser comprobado con Meta."),
     ]
     for identity, name, url, node, status, detail in defaults:
@@ -29,8 +29,12 @@ def sources(db):
     result = []
     for source in db.query(PublicationSource).order_by(PublicationSource.id):
         count = db.query(MetaPost).count() if source.id == "johan" else db.query(ObservedPost).filter(ObservedPost.source_id == source.id).count()
+        detail = source.detail
+        # Translate only the former application default; preserve captured content.
+        if source.id == "johan" and detail == "Publicaciones ya capturadas de las redes conectadas a CIVIA.":
+            detail = "Publicaciones ya capturadas de las redes conectadas a Ordenemos a Neiva."
         result.append({"id": source.id, "name": source.name, "url": source.url, "status": source.status,
-                       "detail": source.detail, "checked_at": source.checked_at, "posts_count": count})
+                       "detail": detail, "checked_at": source.checked_at, "posts_count": count})
     return result
 
 

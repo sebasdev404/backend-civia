@@ -92,7 +92,7 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db), actor: Use
 
 @router.get("/users", response_model=List[UserResponse])
 def get_all_users(db: Session = Depends(get_db)):
-    """Retorna la lista de todos los usuarios registrados en el sistema CIVIA."""
+    """Retorna la lista de todos los usuarios registrados en el sistema Ordenemos a Neiva."""
     users = db.query(User).order_by(User.created_at.desc()).all()
     return users
 
@@ -179,7 +179,7 @@ def reset_password(req: ResetPasswordRequest, background: BackgroundTasks, db: S
     background.add_task(process_outbox,db.get_bind())
 
     return ResetPasswordResponse(
-        message="¡Tu contraseña ha sido restablecida con éxito! Ingresando a CIVIA...",
+        message="¡Tu contraseña ha sido restablecida con éxito! Ingresando a Ordenemos a Neiva...",
         access_token=access_token,
         token_type="bearer",
         user=user

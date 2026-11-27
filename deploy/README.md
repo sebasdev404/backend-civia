@@ -1,4 +1,4 @@
-# Despliegue de CIVIA
+# Despliegue de Ordenemos a Neiva
 
 Este paquete prepara un servidor Linux con Docker Engine y Compose v2. La aplicación se comprobó localmente con PostgreSQL y Next en modo producción. **Las imágenes Linux y el dominio definitivo deben verificarse en el servidor de destino; este archivo no acredita un despliegue público.**
 

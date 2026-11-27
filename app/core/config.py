@@ -8,7 +8,7 @@ _ENV_PATH = os.path.join(_BASE_DIR, ".env")
 
 class Settings(BaseSettings):
     ENVIRONMENT: Literal['development', 'test', 'production'] = 'development'
-    PROJECT_NAME: str = "CIVIA API - Plataforma de Inteligencia Ciudadana"
+    PROJECT_NAME: str = "Ordenemos a Neiva API - Escucha y gestión ciudadana"
     VERSION: str = "1.0.0"
     PUBLIC_ASSET_BASE: str = '/assets'
     AUTO_SYNC_ENABLED: bool = True

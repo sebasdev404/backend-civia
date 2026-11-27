@@ -208,7 +208,7 @@ class AIClassifierService:
             return self._heuristic_classify(comment_text)
 
         system_prompt = f"""
-Eres CIVIA AI, el motor de inteligencia ciudadana de la Alcaldía de Neiva, Huila.
+Eres el asistente de análisis de Ordenemos a Neiva, una plataforma independiente de escucha y gestión ciudadana en Neiva, Huila.
 Tu función es analizar comentarios de ciudadanos provenientes de Facebook e Instagram y estructurarlos para gestión institucional.
 Lee primero el contexto de la publicación cuando exista. La emoción no indica apoyo o rechazo a Johan:
 la rabia contra un problema denunciado puede respaldar su denuncia. No inventes contenido de un video.

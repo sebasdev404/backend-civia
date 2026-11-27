@@ -56,7 +56,7 @@ class CorrectionTests(unittest.TestCase):
         self.assertIsNone(row.assigned_to)
         self.assertIsNone(row.assigned_department)
         self.assertIn('Despacho de prueba', row.internal_notes)
-        self.assertIn('Corrección CIVIA por admin', row.internal_notes)
+        self.assertIn('Corrección Ordenemos a Neiva por admin', row.internal_notes)
         self.assertEqual(before, (self.snapshot(CaseComment), self.snapshot(CaseProvenanceReview)))
         self.assertEqual(self.client.delete('/api/v1/cases/a').status_code, 409)
 
@@ -76,7 +76,7 @@ class CorrectionTests(unittest.TestCase):
         self.assertEqual(self.undo(key).status_code, 200)
         row=self.db.get(Case, 'a')
         self.assertEqual((row.status,row.assigned_to,row.assigned_department,row.requires_followup), (status,owner,department,followup))
-        self.assertIn('Corrección CIVIA',row.internal_notes)
+        self.assertIn('Corrección Ordenemos a Neiva',row.internal_notes)
         self.assertIn('Reversión de corrección',row.internal_notes)
 
     def test_later_work_blocks_undo_without_overwriting_it(self):

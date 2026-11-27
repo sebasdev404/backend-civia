@@ -132,7 +132,7 @@ def overview(db):
     last_change = db.execute(select(func.max(latest.c.changed_at))).scalar()
     return {'generated_at': datetime.now(timezone.utc).isoformat(),
         'data_updated_at': iso(last_change),
-        'scope': 'Histórico guardado en CIVIA; no equivale a solicitudes confirmadas ni a una consulta en vivo de Meta.',
+        'scope': 'Histórico guardado en Ordenemos a Neiva; no equivale a solicitudes confirmadas ni a una consulta en vivo de Meta.',
         'cases': case_counts(db), 'capture': captured_metrics(posts), 'contextual': contextual_counts(db, posts),
         'territorial': territorial_counts(db),
         'response_time': {'average_hours': None, 'reason': 'No hay eventos de atención estructurados suficientes para calcular este tiempo.'}}
