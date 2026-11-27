@@ -27,6 +27,7 @@ Las pruebas de integración de lectura necesitan PostgreSQL con el esquema actua
 
 ## Documentación
 
+- [Instalación y traslado al portátil](docs/INSTALACION_PORTATIL.md).
 - [Estructura y lógica de negocio](docs/PROYECTO_CIVIA.md).
 - [Tareas terminadas y pendientes](docs/SEGUIMIENTO.md).
 - [Flujo de atención](docs/FLUJO_ATENCION_20261125.md).

@@ -1,5 +1,7 @@
 from sqlalchemy import Column, String, Integer, Float, Text, DateTime, JSON, func
 from app.core.database import Base
+from sqlalchemy.orm import validates
+from app.core.contact_phone import normalize_phone
 
 class Citizen(Base):
     __tablename__ = "citizens"
@@ -11,7 +13,9 @@ class Citizen(Base):
     channel = Column(String(50), default="Facebook")  # "Facebook", "Instagram", "WhatsApp", "Base de Datos"
     zone = Column(String(100), default="Neiva (General)")
     neighborhood = Column(String(150), nullable=True)
-    phone = Column(String(50), nullable=True, index=True)
+    phone = Column(String(50), nullable=True, index=True, unique=True)
+    contact_origin = Column(String(40), nullable=True)
+    origin_observation = Column(Text, nullable=True)
     followers_count = Column(Integer, default=0)
     following_count = Column(Integer, default=0)
     account_created_at = Column(String(100), nullable=True)
@@ -26,3 +30,7 @@ class Citizen(Base):
     origen_dato = Column(String(50), default="BASE_SUBIDA")  # "BASE_SUBIDA", "META_COMMENT", "OPERADOR", "FORMULARIO"
     source_data = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    @validates('phone')
+    def validate_phone(self, key, value):
+        return normalize_phone(value)

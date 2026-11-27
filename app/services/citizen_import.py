@@ -6,13 +6,14 @@ import re
 import unicodedata
 import uuid
 import zipfile
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from openpyxl import load_workbook
 from sqlalchemy.orm import Session
 
 from app.models.citizen import Citizen
+from app.core.contact_phone import normalize_phone
 
 MAX_FILE_BYTES = 10 * 1024 * 1024
 MAX_ROWS = 10000
@@ -25,22 +26,6 @@ def normalized_header(value):
 
 def phone_key(value):
     return re.sub(r"\D", "", str(value or ""))
-
-
-def normalize_phone(value):
-    if value is None or str(value).strip() == "":
-        return None
-    raw = str(int(value)) if isinstance(value, (int, float)) and float(value).is_integer() else str(value).strip()
-    if re.search(r"[a-zA-Z]", raw):
-        raise ValueError("El teléfono contiene letras")
-    digits = phone_key(raw)
-    if raw.startswith("00"):
-        digits = digits[2:]
-    elif not raw.startswith("+") and len(digits) == 10 and digits.startswith("3"):
-        digits = "57" + digits
-    if not 7 <= len(digits) <= 15:
-        raise ValueError("El teléfono debe contener entre 7 y 15 dígitos")
-    return "+" + digits
 
 
 def json_value(value):
@@ -107,14 +92,14 @@ def parse_contact_file(content: bytes, filename: str):
             mapping[field] = [normalized.index(normalized_header(a)) for a in aliases if normalized_header(a) in normalized]
         if not any(mapping[k] for k in ("name", "agenda_name", "profile_name")):
             raise ValueError("Falta la columna Nombre")
-        if not mapping["phone"] and not mapping["whatsapp_username"]:
-            raise ValueError("Falta Teléfono o Usuario WhatsApp para identificar contactos sin duplicarlos")
+        if not mapping["phone"]:
+            raise ValueError("Falta la columna Teléfono para identificar contactos sin duplicarlos")
 
         def cell(values, field):
             for index in mapping[field]:
                 v = values[index] if index < len(values) else None
                 if v is not None and str(v).strip():
-                    return str(v).strip()
+                    return v if field == 'phone' and isinstance(v, (int, float, bool)) else str(v).strip()
             return None
 
         records, issues = [], []
@@ -131,7 +116,7 @@ def parse_contact_file(content: bytes, filename: str):
                 username = cell(values, "whatsapp_username")
                 if not name or len(name) > 100:
                     raise ValueError("Nombre obligatorio, máximo 100 caracteres")
-                if not phone and not username:
+                if not phone:
                     raise ValueError("Se necesita teléfono o usuario WhatsApp; el nombre no es un identificador único")
                 if username and len(username) > 70:
                     raise ValueError("Usuario WhatsApp demasiado largo")
@@ -165,7 +150,7 @@ def parse_contact_file(content: bytes, filename: str):
             workbook.close()
 
 
-def import_contacts(db: Session, parsed: dict, *, preview=False, actor=None):
+def import_contacts(db: Session, parsed: dict, *, preview=False, actor=None, provenance=None):
     """Exact identifiers only. One transaction; repeat imports do not create duplicates."""
     existing = db.query(Citizen).all()
     by_phone, by_username = {}, {}
@@ -203,15 +188,29 @@ def import_contacts(db: Session, parsed: dict, *, preview=False, actor=None):
         counts["with_phone" if phone else "without_phone"] += 1
         source = {k: parsed[k] for k in ("file_name", "file_sha256", "sheet_name")}
         source.update({k: row[k] for k in ("row_number", "whatsapp_username", "fields")})
+        if provenance:
+            source.update(provenance)
         citizen = next(iter(matches.values()), None)
+        if citizen and citizen.phone and phone_key(normalize_phone(citizen.phone)) != phone:
+            counts['with_phone'] -= 1
+            counts['rejected'] += 1
+            issues.append({'row': row['row_number'], 'reason': 'El usuario de WhatsApp pertenece a un contacto con otro teléfono. Revisa ambos datos; no se cambió el número existente.'})
+            continue
         action = "new_citizens_added"
         if citizen:
-            action = "unchanged" if citizen.source_data == source else "existing_updated"
+            previous = dict(citizen.source_data or {})
+            history = previous.pop("history", [])
+            comparable = {k: v for k, v in previous.items() if k not in ('recorded_at', 'recorded_by')}
+            action = "unchanged" if comparable == source else "existing_updated"
+            if action == "existing_updated" and previous:
+                source["history"] = [*history, previous]
         counts[action] += 1
         if len(sample) < 5:
             sample.append({k: row[k] for k in ("name", "phone", "whatsapp_username", "zone", "neighborhood")})
         if preview or action == "unchanged":
             continue
+        source['recorded_at'] = datetime.now(timezone.utc).isoformat()
+        source['recorded_by'] = actor.id if actor else 'system'
         if citizen is None:
             handle = "contact:phone:" + phone if phone else "contact:whatsapp:" + username
             citizen = Citizen(
@@ -221,24 +220,24 @@ def import_contacts(db: Session, parsed: dict, *, preview=False, actor=None):
                 user_type="Sin clasificar", total_reports=0, followers_count=0, following_count=0,
                 credibility_score=0, bot_probability=0, sentiment_tendency="Sin evaluar",
                 origen_dato="BASE_SUBIDA", source_data=source,
+                contact_origin=(provenance or {}).get("contact_origin"),
+                origin_observation=(provenance or {}).get("origin_observation"),
             )
             # Assign unknown location explicitly (the legacy ORM has a Neiva default).
             citizen.zone = row["zone"] or "No especificada"
             db.add(citizen)
         else:
             # Keep verified social identities, existing cases and classifications intact.
-            if citizen.channel in ("WhatsApp", "Base de Datos"):
-                citizen.name = row["name"]
-                for field in ("zone", "neighborhood", "notes"):
-                    if row[field] is not None:
-                        setattr(citizen, field, row[field])
             for field in ("phone", "zone", "neighborhood", "notes"):
                 if not getattr(citizen, field) and row[field]:
                     setattr(citizen, field, row[field])
             citizen.source_data = source
+            if provenance:
+                citizen.contact_origin = provenance["contact_origin"]
+                citizen.origin_observation = provenance["origin_observation"]
     if not preview:
         from app.services.audit import record
-        record(db,actor,'contacts_imported',**counts)
+        record(db,actor,'contacts_imported',contact_origin=(provenance or {}).get('contact_origin'),**counts)
         db.commit()
     return {
         "success": True, "preview": preview, "summary": counts,

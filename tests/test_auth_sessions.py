@@ -84,6 +84,16 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.db.get(User,'person').hashed_password,self.hashed)
         self.assertEqual(self.me(token).status_code,200)
 
+    def test_password_policy_rejections_preserve_password_and_current_session(self):
+        token = self.login()
+        for password in ('lowercase-only-2026', 'NoSpecialCharacter2026', 'No-Numbers-Here', 'ALL-UPPERCASE-2026'):
+            with self.subTest(case=password):
+                response = self.client.post('/api/v1/auth/change-password', headers=self.headers(token),
+                                            json={'current_password': self.password, 'new_password': password})
+                self.assertEqual(response.status_code, 422)
+                self.assertEqual(self.db.get(User, 'person').hashed_password, self.hashed)
+                self.assertEqual(self.me(token).status_code, 200)
+
     def test_password_reset_revokes_all_old_sessions_and_consumes_code(self):
         first,second=self.login(),self.login()
         user=self.db.get(User,'person');prepare_recovery(self.db,user,'123456');self.db.commit()

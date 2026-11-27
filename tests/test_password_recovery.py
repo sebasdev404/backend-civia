@@ -139,6 +139,18 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertIsNone(self.db.get(PasswordRecovery, 'fixture').used_at)
 
+    def test_policy_rejection_preserves_code_and_allows_a_later_valid_reset(self):
+        self.request_code()
+        for password in ('lowercase-only-2026', 'NoSpecialCharacter2026', 'No-Numbers-Here', 'ALL-UPPERCASE-2026'):
+            response = self.client.post('/api/v1/auth/reset-password', json={
+                'email': 'fixture@recovery.invalid', 'otp_code': '246810', 'new_password': password})
+            self.assertEqual(response.status_code, 422)
+            self.assertEqual(self.db.get(User, 'fixture').hashed_password, self.hashed)
+            challenge = self.db.get(PasswordRecovery, 'fixture')
+            self.assertIsNone(challenge.used_at)
+            self.assertEqual(challenge.failed_attempts, 0)
+        self.assertEqual(self.reset().status_code, 200)
+
 
 class SharedLimitTests(unittest.TestCase):
     def test_multiple_connections_share_atomic_budget_and_expiry(self):

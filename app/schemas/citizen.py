@@ -1,4 +1,6 @@
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from typing import Literal
+from app.core.contact_phone import normalize_phone
 from typing import Optional, List, Dict, Any, Annotated
 from datetime import datetime
 
@@ -10,6 +12,8 @@ class CitizenBase(BaseModel):
     zone: Optional[str] = "Neiva (General)"
     neighborhood: Optional[str] = None
     phone: Optional[str] = None
+    contact_origin: Optional[str] = None
+    origin_observation: Optional[str] = None
     followers_count: Optional[int] = 0
     following_count: Optional[int] = 0
     account_created_at: Optional[str] = None
@@ -44,6 +48,33 @@ class CitizenUploadItem(BaseModel):
 class CitizenUploadRequest(BaseModel):
     citizens: List[CitizenUploadItem]
     source_tag: Optional[str] = "Base_Importada_CSV"
+    contact_origin: Optional[str] = None
+    origin_observation: Optional[str] = None
+
+
+ContactOrigin = Literal['Formulario', 'Censo', 'Familiar', 'Referido', 'Evento', 'Visita territorial', 'Llamada', 'WhatsApp', 'Otro']
+
+
+class ContactProvenance(BaseModel):
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    contact_origin: ContactOrigin
+    origin_observation: str = Field(default='', max_length=2000)
+
+
+class CitizenRegistration(ContactProvenance):
+    name: str = Field(min_length=1, max_length=100)
+    phone: str
+    neighborhood: str = Field(default='', max_length=150)
+    zone: str = Field(default='', max_length=100)
+    notes: str = Field(default='', max_length=2000)
+
+    @field_validator('phone')
+    @classmethod
+    def valid_phone(cls, value):
+        result = normalize_phone(value)
+        if not result:
+            raise ValueError('El teléfono es obligatorio para registrar un contacto')
+        return result
 
 
 class CitizenDeleteRequest(BaseModel):

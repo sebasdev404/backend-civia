@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, Integer, func
+from sqlalchemy import Column, String, Text, DateTime, Integer, Boolean, ForeignKey, func
 from app.core.database import Base
 
 
@@ -50,4 +50,21 @@ class MetaSyncJob(Base):
     result_json = Column(Text, nullable=True)
     error = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class NewsSource(Base):
+    __tablename__ = 'news_sources'
+    source_id = Column(String(80), ForeignKey('publication_sources.id'), primary_key=True)
+    page_url = Column(String(350), unique=True, nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True, server_default='true')
+    created_by = Column(String(100), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class NewsAnalysis(Base):
+    __tablename__ = 'news_analyses'
+    post_id = Column(String(150), ForeignKey('observed_posts.id'), primary_key=True)
+    fingerprint = Column(String(64), nullable=False)
+    result_json = Column(Text, nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

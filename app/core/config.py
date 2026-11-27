@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Ordenemos a Neiva API - Escucha y gestión ciudadana"
     VERSION: str = "1.0.0"
     PUBLIC_ASSET_BASE: str = '/assets'
+    PUBLIC_APP_URL: str = ''  # Base URL in account welcome emails; falls back to configured frontend CORS origin.
     AUTO_SYNC_ENABLED: bool = True
     AUTO_ANALYZE_ENABLED: bool = False
     SESSION_RETENTION_DAYS: int = 30
@@ -30,6 +31,7 @@ class Settings(BaseSettings):
 
     # Configuración de Inteligencia Artificial (OpenAI)
     OPENAI_API_KEY: Optional[str] = None
+    OPINION_ANALYSIS_MODEL: str = 'gpt-4o-mini'
     OPENAI_INITIAL_BUDGET: float = 10.00
     OPENAI_CONSUMED_USD: Optional[float] = None
     OPENAI_REAL_BALANCE: Optional[float] = None
@@ -52,6 +54,13 @@ class Settings(BaseSettings):
 
     @model_validator(mode='after')
     def production_security(self):
+        if self.PUBLIC_APP_URL:
+            from urllib.parse import urlsplit
+            url = urlsplit(self.PUBLIC_APP_URL)
+            if not url.hostname or url.username or url.password or url.query or url.fragment or '\\' in self.PUBLIC_APP_URL or 'REPLACE' in self.PUBLIC_APP_URL or any(c.isspace() for c in self.PUBLIC_APP_URL) or url.scheme not in ('https', 'http'):
+                raise ValueError('PUBLIC_APP_URL debe ser una URL base válida, sin credenciales ni parámetros.')
+            if url.scheme == 'http' and (self.ENVIRONMENT == 'production' or url.hostname not in ('localhost', '127.0.0.1', '::1')):
+                raise ValueError('PUBLIC_APP_URL requiere HTTPS, salvo desarrollo local.')
         if self.ENVIRONMENT == 'production':
             from urllib.parse import urlsplit
             known = {'SUPER_SECRET_KEY_REEMPLAZAR_EN_PRODUCCION', 'civia_secret_dev_key_2026_bogota_intelligence'}

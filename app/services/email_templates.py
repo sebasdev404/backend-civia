@@ -54,6 +54,29 @@ def _layout(title: str, content: str, preheader: str) -> str:
 </html>'''
 
 
+def render_welcome_email(user_name: str, email: str, password: str, role: str, login_url: str) -> str:
+    roles = {'ADMIN': 'Administrador', 'ALCALDE': 'Alcalde', 'SECRETARIO': 'Secretaría', 'OPERADOR': 'Operador'}
+    content = f'''
+      <p style="margin:0 0 20px;color:#c6c6c6;font-size:16px;line-height:1.7;">Hola <strong style="color:#f4f4f4;">{escape(user_name)}</strong>, el administrador cre&oacute; tu cuenta en {BRAND_NAME}.</p>
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#13251b" style="background-color:#13251b;border:1px solid #22804d;border-radius:14px;">
+        <tr><td style="padding:22px;">
+          <p style="margin:0 0 16px;color:#58c783;font-size:13px;font-weight:bold;">TUS DATOS DE ACCESO</p>
+          <p style="margin:0 0 5px;color:#c6c6c6;font-size:13px;">Correo de acceso</p>
+          <p dir="ltr" style="margin:0 0 18px;color:#f4f4f4;font-size:16px;overflow-wrap:anywhere;word-break:break-word;">{escape(email)}</p>
+          <p style="margin:0 0 5px;color:#c6c6c6;font-size:13px;">Contrase&ntilde;a inicial</p>
+          <p dir="ltr" style="margin:0 0 18px;color:#f3cc52;font-family:'Courier New',Courier,monospace;font-size:24px;font-weight:bold;overflow-wrap:anywhere;word-break:break-all;white-space:pre-wrap;">{escape(password)}</p>
+          <p style="margin:0;color:#c6c6c6;font-size:14px;">Rol asignado: <strong style="color:#f4f4f4;">{escape(roles.get(role, role))}</strong></p>
+        </td></tr>
+      </table>
+      <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center" style="margin:26px auto;"><tr><td align="center" bgcolor="#22804d" style="border-radius:10px;background-color:#22804d;">
+        <a href="{escape(login_url, quote=True)}" style="display:inline-block;padding:15px 25px;color:#ffffff;text-decoration:none;font-size:16px;font-weight:bold;">Ingresar a la plataforma &rarr;</a>
+      </td></tr></table>
+      <p style="margin:0 0 16px;color:#c6c6c6;font-size:14px;line-height:1.7;">Despu&eacute;s de ingresar, abre <strong>Mi cuenta y seguridad</strong> para cambiar tu contrase&ntilde;a. La nueva clave debe tener al menos 10 caracteres, may&uacute;scula, min&uacute;scula, n&uacute;mero y un car&aacute;cter especial.</p>
+      <p style="margin:0 0 16px;color:#aaaaaa;font-size:12px;line-height:1.7;">Si el bot&oacute;n no abre la plataforma, copia esta direcci&oacute;n en tu navegador:<br><a href="{escape(login_url, quote=True)}" style="color:#58c783;overflow-wrap:anywhere;word-break:break-all;">{escape(login_url)}</a></p>
+      <p style="margin:0;color:#aaaaaa;font-size:12px;line-height:1.7;">Conserva estas credenciales de forma privada. Si no reconoces esta cuenta, contacta al administrador.</p>'''
+    return _layout('Bienvenido a la plataforma', content, 'Tu cuenta está lista: consulta tus credenciales e ingresa a la plataforma.')
+
+
 def render_otp_email(user_name: str, otp_code: str) -> str:
     name, code = escape(user_name), escape(otp_code)
     content = f'''

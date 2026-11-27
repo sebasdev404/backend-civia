@@ -14,6 +14,7 @@ from app.schemas.user import (
     ChangePasswordRequest,
     UserCreate,
     UserResponse,
+    UserAdministrationResponse,
     TokenResponse,
     ForgotPasswordRequest,
     ForgotPasswordResponse,
@@ -26,7 +27,7 @@ from app.core.security import verify_password, get_password_hash, decode_access_
 from app.core.auth_limits import check_recovery_limit
 from app.services.email_service import smtp_is_configured, send_password_changed_email
 from app.services.password_recovery import require_code
-from app.services.mail_queue import enqueue,process_outbox,invalidate_recovery_mail
+from app.services.mail_queue import enqueue,process_outbox,invalidate_recovery_mail,enqueue_welcome,welcome_statuses,welcome_detail
 
 router = APIRouter(prefix="/auth", tags=["Autenticación y Seguridad"])
 
@@ -62,8 +63,8 @@ def get_current_user_profile(current_user: User = Depends(get_current_user)):
     """Obtiene el perfil del usuario autenticado actualmente."""
     return current_user
 
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-def register_user(user_in: UserCreate, db: Session = Depends(get_db), actor: User = Depends(get_current_user)):
+@router.post("/register", response_model=UserAdministrationResponse, status_code=status.HTTP_201_CREATED)
+def register_user(user_in: UserCreate, background: BackgroundTasks, db: Session = Depends(get_db), actor: User = Depends(get_current_user)):
     """Crea una nueva cuenta de usuario (para administración interna)."""
     email_clean = user_in.email.strip().lower()
     existing = db.query(User).filter(User.email == email_clean).populate_existing().with_for_update().first()
@@ -84,17 +85,22 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db), actor: Use
     )
     db.add(new_user)
     db.flush()
+    enqueue_welcome(db, new_user, user_in.password)
     from app.services.audit import record
     record(db,actor,'user_created',new_user.id,role=new_user.role)
     db.commit()
     db.refresh(new_user)
-    return new_user
+    background.add_task(process_outbox, db.get_bind())
+    return {**UserResponse.model_validate(new_user).model_dump(), 'welcome_email_status': 'queued',
+            'welcome_email_detail': welcome_detail('queued') if smtp_is_configured() else 'Cuenta creada. Bienvenida pendiente: configura el servicio SMTP para enviarla.'}
 
-@router.get("/users", response_model=List[UserResponse])
+@router.get("/users", response_model=List[UserAdministrationResponse])
 def get_all_users(db: Session = Depends(get_db)):
     """Retorna la lista de todos los usuarios registrados en el sistema Ordenemos a Neiva."""
     users = db.query(User).order_by(User.created_at.desc()).all()
-    return users
+    states = welcome_statuses(db, users)
+    return [{**UserResponse.model_validate(user).model_dump(), 'welcome_email_status': states.get(user.id),
+             'welcome_email_detail': welcome_detail(states.get(user.id))} for user in users]
 
 
 @router.patch('/users/{user_id}',response_model=UserResponse)

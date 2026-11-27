@@ -6,7 +6,7 @@ from sqlalchemy.orm import defer
 
 from app.core.config import settings
 from app.models.meta_post import MetaPost
-from app.models.publication import PublicationSource, ObservedPost, PublicationSnapshot
+from app.models.publication import PublicationSource, ObservedPost, PublicationSnapshot, NewsSource
 from app.services.automation_signals import comment_signals
 from app.services.facebook_graph import GraphAPIError, facebook_author_fields, graph_get, iter_connection, read_post_comments
 from app.services.post_images import post_image_urls
@@ -27,7 +27,7 @@ def ensure_sources(db):
 
 def sources(db):
     result = []
-    for source in db.query(PublicationSource).order_by(PublicationSource.id):
+    for source in db.query(PublicationSource).filter(~PublicationSource.id.in_(db.query(NewsSource.source_id))).order_by(PublicationSource.id):
         count = db.query(MetaPost).count() if source.id == "johan" else db.query(ObservedPost).filter(ObservedPost.source_id == source.id).count()
         detail = source.detail
         # Translate only the former application default; preserve captured content.
@@ -211,7 +211,7 @@ def source_permission_error(source, exc):
     source.checked_at = datetime.now(timezone.utc)
 
 
-def sync_external(db, source_id, progress):
+def sync_external(db, source_id, progress, *, capture_discussion=True):
     source = db.get(PublicationSource, source_id)
     token = settings.META_PAGE_ACCESS_TOKEN
     progress(stage="access", detail=f"Comprobando acceso a {source.name}")
@@ -236,8 +236,12 @@ def sync_external(db, source_id, progress):
     for index, item in enumerate(posts):
         progress(stage="comments", completed=index, total=len(posts), detail=f"Consultando publicación {index + 1} de {len(posts)}")
         try:
-            comments, total = read_post_comments(item, token)
+            comments, total = read_post_comments(item, token) if capture_discussion else (None, None)
+            if not isinstance(item.get('id'), str) or not item['id']:
+                raise ValueError('Publicación sin ID verificable')
             post = db.get(ObservedPost, item["id"])
+            if post is not None and post.source_id != source_id:
+                raise ValueError('La publicación pertenece a otra fuente registrada')
             if post is None:
                 post = ObservedPost(id=item["id"], source_id=source_id)
                 db.add(post)
@@ -247,9 +251,11 @@ def sync_external(db, source_id, progress):
             post.cover_image = item.get("full_picture")
             attachments = (item.get("attachments") or {}).get("data", [])
             post.media_type = "video" if attachments and "video" in str(attachments[0]).lower() else "image"
-            post.total_comments, post.raw_comments_json = total, json.dumps(normalized_comments(comments), ensure_ascii=False)
+            if capture_discussion:
+                post.total_comments, post.raw_comments_json = total, json.dumps(normalized_comments(comments), ensure_ascii=False)
             db.commit()
-            errors.extend(capture_metrics(db, post.id, token))
+            if capture_discussion:
+                errors.extend(capture_metrics(db, post.id, token))
             updated += 1
         except Exception:
             db.rollback()

@@ -13,7 +13,8 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="civia-sync")
 _start_lock = threading.Lock()
-TERMINAL = {"success", "partial", "failed", "interrupted"}
+TERMINAL = {"success", "partial", "failed", "interrupted", "cancelled"}
+OPINION_SCOPE = 'opinion-analysis'
 ANALYSIS_RETRY_DELAY = timedelta(minutes=5)
 
 
@@ -34,6 +35,8 @@ def queue_pending_analysis(db):
 
     if not settings.AUTO_ANALYZE_ENABLED or ai_classifier.client is None:
         return
+    if db.query(MetaSyncJob).filter(MetaSyncJob.active_key == OPINION_SCOPE).first():
+        return
     last = latest_job(db, "analysis")
     if last and last.active_key:
         return
@@ -51,7 +54,7 @@ def recover_jobs(db):
     # El servidor local usa un único proceso; una ejecución anterior no sobrevive al reinicio.
     resumed=[]
     for job in db.query(MetaSyncJob).filter(MetaSyncJob.active_key.is_not(None)):
-        if job.scope=='analysis':
+        if job.scope in ('analysis', OPINION_SCOPE):
             job.status,job.active_key,job.error='interrupted',None,'El análisis se interrumpió. Revisa el avance antes de solicitarlo de nuevo.'
         else:
             job.status,job.error='queued',None
@@ -96,16 +99,35 @@ def _connected_sync(db, progress):
 def _run(job_id, scope):
     with SessionLocal() as db:
         job = db.get(MetaSyncJob, job_id)
-        job.status = "running"
+        if job.status != 'cancelling':
+            job.status = "running"
         db.commit()
         progress = lambda **value: _progress(job_id, **value)
         try:
             if scope == "connected":
                 result = _connected_sync(db, progress)
+            elif scope == 'news-monitor':
+                from app.services.news_monitor import run_monitor
+                result = run_monitor(db, progress)
             elif scope == "analysis":
                 from app.services.conversation import analyze_pending
                 progress(stage="analysis", detail="Analizando comentarios por separado de la captura de publicaciones")
                 result = analyze_pending(db, limit=20)
+            elif scope == OPINION_SCOPE:
+                from app.services.conversation import analyze_all
+                saved = json.loads(job.progress_json or '{}')
+                options = saved.get('filters', {})
+                def cancelled():
+                    with SessionLocal() as control_db:
+                        control = control_db.get(MetaSyncJob, job_id)
+                        return control.status == 'cancelling'
+                def checkpoint(**value):
+                    current = db.get(MetaSyncJob, job_id)
+                    # The result rows and this cursor commit in the same transaction.
+                    current.progress_json = json.dumps({**json.loads(current.progress_json or '{}'), **value}, ensure_ascii=False)
+                result = analyze_all(db, month=options.get('month'), post_id=options.get('post_id'),
+                                     include_review=options.get('include_review', True), review_before=job.created_at,
+                                     previous=saved, progress=progress, should_cancel=cancelled, checkpoint=checkpoint, concurrency=3)
             elif scope.startswith("source:"):
                 from app.services.publications import sync_external
                 result = sync_external(db, scope.split(":", 1)[1], progress)
@@ -116,8 +138,9 @@ def _run(job_id, scope):
             else:
                 raise ValueError("Unknown job scope")
             job = db.get(MetaSyncJob, job_id)
+            db.refresh(job)
             job.status, job.result_json = result.get("status", "success"), json.dumps(result, ensure_ascii=False)
-            job.progress_json = json.dumps({"stage": "done", "detail": result.get("detail", "Actualización terminada.")}, ensure_ascii=False)
+            job.progress_json = json.dumps({**json.loads(job.progress_json or '{}'), "stage": "done", "detail": result.get("detail", "Actualización terminada.")}, ensure_ascii=False)
         except Exception as exc:
             db.rollback()
             logger.warning("Actualización Meta no completada: %s", type(exc).__name__)
@@ -125,6 +148,48 @@ def _run(job_id, scope):
             job.status, job.error = "failed", "No se pudo completar la actualización. Se conservan los datos capturados anteriormente."
         job.active_key = None
         db.commit()
+
+
+def start_opinion_analysis(db, *, month=None, post_id=None, include_review=True, actor=None, resume_id=None):
+    from fastapi import HTTPException
+    from app.services.audit import record
+    with _start_lock:
+        active = db.query(MetaSyncJob).filter(MetaSyncJob.active_key.in_((OPINION_SCOPE, 'analysis'))).first()
+        if active:
+            if active.scope == OPINION_SCOPE:
+                return {**job_data(active), 'already_running': True}
+            raise HTTPException(409, 'Hay un lote automático de análisis en curso. Espera a que termine.')
+        if resume_id:
+            job = db.query(MetaSyncJob).filter_by(id=resume_id, scope=OPINION_SCOPE).populate_existing().with_for_update().first()
+            if job is None:
+                raise HTTPException(404, 'Trabajo de análisis no encontrado.')
+            if job.status not in ('partial', 'failed', 'interrupted', 'cancelled'):
+                raise HTTPException(409, 'Este trabajo no necesita reanudarse.')
+            saved = json.loads(job.progress_json or '{}')
+            job.progress_json = json.dumps({**saved, 'stage': 'queued', 'cancel_requested': False,
+                                           'detail': 'Reanudando desde el último lote guardado.'}, ensure_ascii=False)
+            job.status, job.error, job.result_json, job.active_key = 'queued', None, None, OPINION_SCOPE
+        else:
+            job = MetaSyncJob(id=str(uuid.uuid4()), scope=OPINION_SCOPE, active_key=OPINION_SCOPE, status='queued',
+                              created_at=datetime.now(timezone.utc), progress_json=json.dumps({
+                                  'stage': 'queued', 'completed': 0, 'classified': 0, 'uncertain': 0,
+                                  'model': settings.OPINION_ANALYSIS_MODEL,
+                                  'filters': {'month': month, 'post_id': post_id, 'include_review': include_review},
+                                  'detail': 'Análisis completo en segundo plano. Puedes seguir navegando.'}, ensure_ascii=False))
+            db.add(job)
+        record(db, actor, 'opinion_analysis_resumed' if resume_id else 'opinion_analysis_started', job.id,
+               period=month or 'all', selected_publication=post_id, review_uncertain=include_review)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            active = db.query(MetaSyncJob).filter_by(active_key=OPINION_SCOPE).first()
+            if active:
+                return {**job_data(active), 'already_running': True}
+            raise
+        result = {**job_data(job), 'already_running': False}
+        _executor.submit(_run, job.id, OPINION_SCOPE)
+        return result
 
 
 def start_job(db, scope="connected"):

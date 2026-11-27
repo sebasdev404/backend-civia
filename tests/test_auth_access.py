@@ -29,6 +29,9 @@ class AccessTests(unittest.TestCase):
         cls.password_hash = get_password_hash(cls.password)
 
     def setUp(self):
+        self.welcome_sender = patch('app.services.email_service.send_welcome_email', return_value=True)
+        self.welcome_sender.start()
+        self.addCleanup(self.welcome_sender.stop)
         self.engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)
         Base.metadata.create_all(self.engine)
         self.db = Session(self.engine)
@@ -177,7 +180,7 @@ class AccessTests(unittest.TestCase):
         user = self.db.get(User, 'ADMIN')
         user.is_active, user.reset_otp, user.reset_otp_expires_at = False, '123456', datetime.utcnow() + timedelta(minutes=15)
         self.db.commit()
-        response = self.client.post('/api/v1/auth/reset-password', json={'email': user.email, 'otp_code': '123456', 'new_password': 'Another-test-password'})
+        response = self.client.post('/api/v1/auth/reset-password', json={'email': user.email, 'otp_code': '123456', 'new_password': 'Another-test-password-2026'})
         self.assertEqual(response.status_code, 400)
         self.assertEqual(user.hashed_password, self.password_hash)
 
@@ -203,6 +206,50 @@ class AccessTests(unittest.TestCase):
         self.assertEqual(invalid_role.status_code, 422)
         self.assertEqual(invalid_length.status_code, 422)
         self.assertEqual(self.db.query(User).count(), 4)
+
+    def test_admin_creates_each_role_with_initial_password_and_can_login(self):
+        from app.core.security import verify_password
+        from app.models.operations import AuditEvent
+        for index, role in enumerate(('ADMIN', 'ALCALDE', 'SECRETARIO', 'OPERADOR')):
+            with self.subTest(role=role):
+                payload = {'email': f' NEW-{index}@example.test ', 'full_name': f'New fixture {role}', 'role': role}
+                if index % 2:
+                    payload['password'] = '1234'
+                response = self.client.post('/api/v1/auth/register', headers=self.headers(), json=payload)
+                self.assertEqual(response.status_code, 201, response.text)
+                profile = response.json()
+                self.assertEqual(profile['email'], f'new-{index}@example.test')
+                self.assertEqual(profile['role'], role)
+                self.assertNotIn('password', profile)
+                self.assertNotIn('hashed_password', profile)
+                stored = self.db.get(User, profile['id'])
+                self.assertNotEqual(stored.hashed_password, '1234')
+                self.assertTrue(verify_password('1234', stored.hashed_password))
+                audit = self.db.query(AuditEvent).filter_by(action='user_created', target_id=stored.id).one()
+                self.assertEqual(audit.actor_id, 'ADMIN')
+                login = self.client.post('/api/v1/auth/login', json={'email': stored.email, 'password': '1234'})
+                self.assertEqual(login.status_code, 200, login.text)
+                self.assertEqual(login.json()['user']['role'], role)
+                duplicate = self.client.post('/api/v1/auth/register', headers=self.headers(), json=payload)
+                self.assertEqual(duplicate.status_code, 400)
+        self.assertEqual(self.db.query(User).count(), 8)
+
+    def test_initial_password_exception_is_limited_to_admin_registration(self):
+        payload = {'email': 'initial@example.test', 'full_name': 'Initial password fixture', 'role': 'OPERADOR'}
+        for role in ('ALCALDE', 'SECRETARIO', 'OPERADOR'):
+            denied = self.client.post('/api/v1/auth/register', headers=self.headers(role), json=payload)
+            self.assertEqual(denied.status_code, 403)
+        for password in ('', '123', '5678', '12345', 'shortpass'):
+            with self.subTest(password=password):
+                invalid = self.client.post('/api/v1/auth/register', headers=self.headers(), json={**payload, 'password': password})
+                self.assertEqual(invalid.status_code, 422)
+        self.assertEqual(self.db.query(User).count(), 4)
+        change = self.client.post('/api/v1/auth/change-password', headers=self.headers(),
+                                  json={'current_password': self.password, 'new_password': '1234'})
+        self.assertEqual(change.status_code, 422)
+        custom = self.client.post('/api/v1/auth/register', headers=self.headers(),
+                                 json={**payload, 'password': 'Custom-fixture-password-2026'})
+        self.assertEqual(custom.status_code, 201, custom.text)
 
 
 if __name__ == '__main__': unittest.main()

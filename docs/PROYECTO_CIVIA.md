@@ -1,6 +1,6 @@
 # Ordenemos a Neiva: estructura, funcionamiento y pendientes
 
-Fecha de revisión: **25 de noviembre de 2026**.
+Fecha de revisión: **26 de noviembre de 2026**.
 
 La [preparación de producción](PREPARACION_PRODUCCION_20261125.md) documenta radicados con soporte, auditoría, correo persistente, webhook, migraciones, copias y despliegue. El [manual operativo](../deploy/README.md) distingue la verificación local de la salida pública pendiente.
 
@@ -52,7 +52,7 @@ Flujo técnico: interfaz → cliente `src/lib/api/client.ts` → rutas FastAPI �
 | --- | --- | --- |
 | Inicio | `/dashboard` | Resumen por rol y accesos. **Sus cifras necesitan revisión:** aún usa una carga limitada de casos y un incremento fijo en el total de reportes. |
 | Opinión sobre Johan | `/opinion` | Análisis contextual de comentarios capturados de Facebook. `/conversation` redirige aquí. Distingue destinatario, tema, emoción y postura. |
-| Publicaciones | `/publications` | Fuentes, publicaciones, comentarios paginados, métricas y reacciones disponibles; exportación de comentarios a CSV. |
+| Publicaciones | `/publications` | Monitor regional de noticias clasificadas por IA y pestaña de redes conectadas. Medios aportados con acceso de Meta pendiente; no se presume lectura por registrar una URL. Ver [monitor de noticias](MONITOR_NOTICIAS_NEIVA_HUILA.md). |
 | Gestión de casos | `/cases` | Publicaciones vinculadas, casos consolidados y bandeja de supervisión. La consulta está paginada; hay acciones de triaje todavía no persistidas. |
 | Detalle de caso | `/cases/[id]` | Consulta, asignación, notas, prioridad, respuesta guardada y cierre. |
 | Mapa de reportes | `/map` | Consulta incidentes y su evidencia territorial; no debe presentar una ubicación supuesta como exacta. |
@@ -103,13 +103,15 @@ Meta puede limitar comentarios, respuestas, autores, fotos y reacciones. Conteo 
 Servicio principal: `app/services/conversation.py`; API: `/api/v1/conversation`.
 
 - Se separan **emoción**, **destinatario** y **postura expresada**. Enojo ante un problema urbano no implica una crítica a Johan.
-- En video, se necesita un resumen o transcripción del contenido hablado. Actualmente se aporta manualmente: el sistema no escucha ni transcribe automáticamente el video.
+- Los comentarios de videos también se analizan sin resumen o transcripción, usando el texto disponible y el padre de la respuesta. Si el sentido depende de lo hablado y falta esa evidencia, el resultado queda para revisión. El sistema no escucha ni transcribe automáticamente el video.
 - El análisis se almacena con una huella del comentario, su contexto y la versión del clasificador. Los cambios relevantes lo vuelven pendiente.
 - Resultados ambiguos, sin contexto o de baja confianza permanecen para revisión y no deben contarse como apoyo o crítica confirmados.
 - Una clasificación describe un comentario en su contexto; no constituye una afinidad política permanente del autor ni una identidad verificada.
 - Las señales de repetición o frecuencia se muestran para revisión. No prueban que alguien sea bot o pertenezca a una granja.
 
-El código utiliza `gpt-4o-mini` en los clasificadores y `text-embedding-3-small` en el servicio de embeddings. La presencia de esos nombres no demuestra que una llamada se haya ejecutado ni que haya saldo. Algunos caminos de clasificación conservan heurísticas de respaldo; hay que identificar su origen y no presentarlas como análisis confirmado por el proveedor.
+El análisis de opinión usa `OPINION_ANALYSIS_MODEL` (predeterminado `gpt-4o-mini`, restablecido por indicación del propietario); los clasificadores institucionales usan ese mismo modelo y los embeddings usan `text-embedding-3-small`. La clasificación de opinión la realiza la API de OpenAI desde el backend, no Codex: Codex desarrolla el código. La presencia de los nombres de modelo no demuestra que una llamada se haya ejecutado ni que haya saldo. Algunos caminos institucionales conservan heurísticas de respaldo; hay que identificar su origen y no presentarlas como análisis confirmado por el proveedor.
+
+**Actualizado el 26/11/2026:** el botón «Analizar pendientes y dudosos» recorre toda la selección en un trabajo persistido, muestra avance y permite detener/reanudar; no se limita a los 20 comentarios del endpoint síncrono heredado. La pantalla separa pendientes y ambigüedad real. Ver [análisis completo, evaluación y límites](OPINION_ANALISIS_COMPLETO.md).
 
 ## 7. Flujo de atención de un caso
 
@@ -147,7 +149,8 @@ Servicio: `app/services/citizen_import.py`; API: `/api/v1/citizens`.
 
 - Excel `.xlsx` o CSV, máximo 10 MB y 10.000 filas. Se usa la hoja `Contactos` cuando existe.
 - Vista previa antes de guardar; validación por fila y conservación de columnas originales en `source_data`.
-- Identificación por teléfono normalizado o usuario de WhatsApp, nunca por similitud de nombre.
+- Registro individual y carga con origen obligatorio y observación opcional; procedencias anteriores conservadas. Nuevos registros requieren nombre y teléfono colombiano válido, nunca similitud de nombre. Los contactos históricos sin teléfono se conservan.
+- Teléfono canónico +57 y 10 dígitos nacionales, único también en PostgreSQL. Los fijos incluyen indicativo regional (608 en Huila). No se completan números locales por suposición. Ver [reglas, permisos y comprobaciones](CIUDADANOS_ORIGEN_TELEFONO.md).
 - Los nuevos contactos quedan sin clasificación social, sin seguidores inventados y con cero interacciones nuevas.
 - Reimportar el mismo archivo permite reconocer registros sin cambios y evita duplicarlos.
 - Eliminar uno o varios requiere sesión firmada y rol `ADMIN` o `ALCALDE`. El lote valida todos los IDs y se aplica en una transacción. No elimina casos ni comentarios.

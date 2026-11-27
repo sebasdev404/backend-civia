@@ -47,9 +47,9 @@ class RealContactImportTests(unittest.TestCase):
         parsed = self.parsed
         self.assertEqual(parsed["sheet_name"], "Contactos")
         self.assertEqual(parsed["total_rows"], 300)
-        self.assertEqual(len(parsed["records"]), 300)
+        self.assertEqual(len(parsed["records"]), 263)
         self.assertEqual(len(parsed["columns"]), 17)
-        self.assertEqual(parsed["issues"], [])
+        self.assertEqual(len(parsed["issues"]), 37)  # Missing-phone rows are reported, never inserted or deleted.
         self.assertTrue(all(len(row["fields"]) == 17 for row in parsed["records"]))
         self.assertTrue(all(row["channel"] == "WhatsApp" for row in parsed["records"]))
 
@@ -59,8 +59,8 @@ class RealContactImportTests(unittest.TestCase):
         usernames = [row["whatsapp_username"] for row in rows if not row["phone"]]
         self.assertEqual(len(phones), 263)
         self.assertEqual(len(set(phones)), 263)
-        self.assertEqual(len(usernames), 37)
-        self.assertEqual(len(set(usernames)), 37)
+        self.assertEqual(len(usernames), 0)
+        self.assertEqual(len(set(usernames)), 0)
         self.assertTrue(all(usernames))
         self.assertTrue(all(phone.startswith("+57") for phone in phones))
 
@@ -69,18 +69,18 @@ class RealContactImportTests(unittest.TestCase):
             before = db.query(Citizen).count()
             result = import_contacts(db, self.parsed, preview=True)
             self.assertEqual(db.query(Citizen).count(), before)
-            self.assertEqual(result["summary"]["rejected"], 0)
+            self.assertEqual(result["summary"]["rejected"], 37)
             self.assertEqual(result["summary"]["duplicates"], 0)
 
     def test_contacts_require_signed_session(self):
         for headers in ({}, {"Authorization": "Bearer demo-token-alcalde"}):
             self.assertEqual(self.client.get("/api/v1/citizens", headers=headers).status_code, 401)
             self.assertEqual(self.client.post("/api/v1/citizens/import/preview", headers=headers,
-                files={"file": (WORKBOOK.name, self.content)}).status_code, 401)
+                files={"file": (WORKBOOK.name, self.content)}, data={"contact_origin":"WhatsApp"}).status_code, 401)
 
     def test_invalid_file_is_not_a_success(self):
         response = self.client.post("/api/v1/citizens/import/preview", headers=self.headers,
-                                    files={"file": ("archivo.txt", b"invalid")})
+                                    files={"file": ("archivo.txt", b"invalid")}, data={"contact_origin":"WhatsApp"})
         self.assertEqual(response.status_code, 422)
 
     def test_pagination_validation_and_source_detail(self):
@@ -118,7 +118,7 @@ class RealContactImportTests(unittest.TestCase):
                 self.assertEqual(citizen.followers_count, 0)
                 self.assertEqual(citizen.bot_probability, 0)
             repeat = import_contacts(db, self.parsed, preview=True)
-            self.assertEqual(repeat["summary"]["unchanged"], 300)
+            self.assertEqual(repeat["summary"]["unchanged"], 263)
             self.assertEqual(repeat["summary"]["new_citizens_added"], 0)
 
 

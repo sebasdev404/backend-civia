@@ -2,6 +2,7 @@ from pydantic import BaseModel
 from typing import Optional, Literal
 from pydantic import Field, field_validator,ConfigDict,StrictBool
 from datetime import datetime
+from app.core.password_policy import validate_new_password
 
 class UserBase(BaseModel):
     email: str
@@ -13,18 +14,26 @@ class UserBase(BaseModel):
 
 class UserCreate(BaseModel):
     email: str
-    password: str = Field(min_length=10, max_length=72)
+    password: str = Field(default='1234', min_length=4, max_length=72)
     full_name: str
     role: Literal['ADMIN', 'ALCALDE', 'SECRETARIO', 'OPERADOR'] = "OPERADOR"
     department: Optional[str] = None
     avatar_url: Optional[str] = None
 
+    @field_validator('email')
+    @classmethod
+    def valid_email(cls, value):
+        import re
+        value = value.strip().lower()
+        if len(value) > 254 or not re.fullmatch(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,63}", value):
+            raise ValueError('Ingresa un correo electrónico válido')
+        return value
+
     @field_validator('password')
     @classmethod
     def bcrypt_password_length(cls, value):
-        if len(value.encode('utf-8')) > 72:
-            raise ValueError('La contraseña no puede superar 72 bytes.')
-        return value
+        # The owner chose 1234 as the initial credential for admin-created accounts.
+        return value if value == '1234' else validate_new_password(value)
 
 class UserLogin(BaseModel):
     email: str
@@ -37,6 +46,11 @@ class UserResponse(UserBase):
 
     class Config:
         from_attributes = True
+
+class UserAdministrationResponse(UserResponse):
+    welcome_email_status: Optional[str] = None
+    welcome_email_detail: Optional[str] = None
+
 
 class UserUpdate(BaseModel):
     full_name:str=Field(min_length=1,max_length=150)
@@ -73,9 +87,7 @@ class ResetPasswordRequest(VerifyOtpRequest):
     @field_validator('new_password')
     @classmethod
     def bcrypt_length(cls, value):
-        if len(value.encode('utf-8')) > 72:
-            raise ValueError('La contraseña no puede superar 72 bytes.')
-        return value
+        return validate_new_password(value)
 
 class ResetPasswordResponse(BaseModel):
     message: str
@@ -90,6 +102,4 @@ class ChangePasswordRequest(BaseModel):
     @field_validator('new_password')
     @classmethod
     def bcrypt_length(cls, value):
-        if len(value.encode('utf-8')) > 72:
-            raise ValueError('La contraseña no puede superar 72 bytes.')
-        return value
+        return validate_new_password(value)

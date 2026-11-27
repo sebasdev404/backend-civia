@@ -12,7 +12,7 @@ from app.models.incident import Incident
 from app.models.citizen import Citizen
 from app.models.meta_post import MetaPost
 from app.models.conversation import PostContext, CommentAnalysis
-from app.models.publication import PublicationSource, ObservedPost, PublicationSnapshot, MetaSyncJob
+from app.models.publication import PublicationSource, ObservedPost, PublicationSnapshot, MetaSyncJob, NewsSource, NewsAnalysis
 
 __all__ = ["Case", "Incident", "Citizen", "MetaPost"]
 

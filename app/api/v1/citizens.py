@@ -1,6 +1,11 @@
 from app.core.assets import asset_base
 from pydantic import BaseModel
-from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile, Header, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile, Header, Request, Form
+from sqlalchemy.exc import IntegrityError
+from pydantic import ValidationError
+import uuid
+from datetime import datetime, timezone
+from app.core.contact_phone import whatsapp_link
 from sqlalchemy.orm import Session, defer
 from sqlalchemy import or_, func, desc, case
 from typing import Optional, Dict, Any
@@ -9,7 +14,7 @@ import re
 from app.core.database import get_db
 from app.models.citizen import Citizen
 from app.models.case import Case
-from app.schemas.citizen import CitizenResponse, CitizenUploadRequest, CitizenDeleteRequest
+from app.schemas.citizen import CitizenResponse, CitizenUploadRequest, CitizenDeleteRequest, CitizenRegistration, ContactProvenance
 from app.schemas.case import CaseAction, CasePublicResponse
 from app.services import case_workflow as workflow
 from app.services.case_consolidation import assert_writable
@@ -34,7 +39,7 @@ router = APIRouter(dependencies=[Depends(require_contact_user)], prefix="/citize
 
 def require_contact_manager(current_user=Depends(require_contact_user)):
     if current_user.role not in ("ADMIN", "ALCALDE"):
-        raise HTTPException(403, "Solo administradores y dirección pueden eliminar ciudadanos")
+        raise HTTPException(403, "Solo administradores y dirección pueden gestionar contactos")
     return current_user
 
 
@@ -77,17 +82,51 @@ async def read_contact_upload(file: UploadFile):
         raise HTTPException(422, str(exc)) from exc
 
 
+def import_provenance(contact_origin: str = Form(...), origin_observation: str = Form('')):
+    try:
+        return ContactProvenance(contact_origin=contact_origin, origin_observation=origin_observation).model_dump()
+    except ValidationError as exc:
+        raise HTTPException(422, 'Selecciona un origen válido y una observación de hasta 2.000 caracteres') from exc
+
+
+@router.post('', response_model=CitizenResponse, status_code=201)
+def register_citizen(payload: CitizenRegistration, db: Session = Depends(get_db), actor=Depends(require_contact_manager)):
+    if db.query(Citizen.id).filter(Citizen.phone == payload.phone).first():
+        raise HTTPException(409, 'Este teléfono ya está registrado. Busca el número en Ciudadanos para consultar el contacto existente.')
+    citizen = Citizen(id='CIUD-' + uuid.uuid4().hex[:20].upper(),
+        handle='contact:phone:' + payload.phone[1:], name=payload.name, phone=payload.phone,
+        zone=payload.zone or 'No especificada', neighborhood=payload.neighborhood or None,
+        notes=payload.notes or None, channel='Base de Datos', origen_dato='OPERADOR',
+        contact_origin=payload.contact_origin, origin_observation=payload.origin_observation,
+        source_data={'registration': 'manual', 'contact_origin': payload.contact_origin,
+            'origin_observation': payload.origin_observation, 'fields': payload.model_dump(),
+            'recorded_at': datetime.now(timezone.utc).isoformat(), 'recorded_by': actor.id})
+    db.add(citizen)
+    from app.services.audit import record
+    record(db, actor, 'contact_created', target=citizen.id, contact_origin=payload.contact_origin)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(409, 'El teléfono ya fue registrado. Actualiza el directorio y busca el contacto.') from exc
+    db.refresh(citizen)
+    return citizen
+
+
 @router.post("/import/preview")
-async def preview_contact_import(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def preview_contact_import(file: UploadFile = File(...), db: Session = Depends(get_db), provenance=Depends(import_provenance), actor=Depends(require_contact_manager)):
     parsed = await read_contact_upload(file)
-    return import_contacts(db, parsed, preview=True)
+    return import_contacts(db, parsed, preview=True, provenance=provenance)
 
 
 @router.post("/import")
-async def save_contact_import(file: UploadFile = File(...), db: Session = Depends(get_db), actor=Depends(require_contact_manager)):
+async def save_contact_import(file: UploadFile = File(...), db: Session = Depends(get_db), actor=Depends(require_contact_manager), provenance=Depends(import_provenance)):
     parsed = await read_contact_upload(file)
     try:
-        return import_contacts(db, parsed, actor=actor)
+        return import_contacts(db, parsed, actor=actor, provenance=provenance)
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(409, 'Un contacto fue registrado durante la carga. Revisa nuevamente el archivo; no se guardó una importación parcial.') from exc
     except Exception:
         db.rollback()
         raise
@@ -191,14 +230,16 @@ def list_citizens(
                 "sentiment_tendency": c.sentiment_tendency,
                 "notes": c.notes,
                 "origen_dato": c.origen_dato,
-                "whatsapp_link": f"https://wa.me/{re.sub(r'[^0-9]', '', c.phone)}" if c.phone else None
+                "contact_origin": c.contact_origin,
+                "origin_observation": c.origin_observation,
+                "whatsapp_link": whatsapp_link(c.phone)
             }
             for c in citizens
         ]
     }
 
 @router.post("/upload", response_model=Dict[str, Any])
-def upload_citizens_database(payload: CitizenUploadRequest, db: Session = Depends(get_db)):
+def upload_citizens_database(payload: CitizenUploadRequest, db: Session = Depends(get_db), actor=Depends(require_contact_manager)):
     import csv
     import io
     stream = io.StringIO()
@@ -208,7 +249,11 @@ def upload_citizens_database(payload: CitizenUploadRequest, db: Session = Depend
         writer.writerow([item.name, item.phone, item.neighborhood, item.notes])
     try:
         parsed = parse_contact_file(stream.getvalue().encode("utf-8"), "contactos.csv")
-        return import_contacts(db, parsed)
+        provenance = ContactProvenance(contact_origin=payload.contact_origin, origin_observation=payload.origin_observation or '').model_dump()
+        return import_contacts(db, parsed, provenance=provenance, actor=actor)
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(409, 'El teléfono ya está registrado; revisa la carga nuevamente.') from exc
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 
@@ -238,7 +283,7 @@ def get_citizen_comments_and_posts(citizen_id: str, request: Request, db: Sessio
     if not citizen:
         raise HTTPException(404, 'Ciudadano no encontrado')
     profile = CitizenResponse.model_validate(citizen).model_dump()
-    profile['whatsapp_link'] = f"https://wa.me/{re.sub(r'[^0-9]', '', citizen.phone)}" if citizen.phone else None
+    profile['whatsapp_link'] = whatsapp_link(citizen.phone)
     if citizen.channel in ('WhatsApp', 'Base de Datos'):
         return {'citizen': profile, 'total_comments': 0, 'comments': [], 'relationship_status': 'not_linked',
                 'relationship_note': 'No hay un perfil social vinculado a este contacto.'}

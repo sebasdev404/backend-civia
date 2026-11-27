@@ -8,8 +8,69 @@ from app.core.database import get_db
 from app.models.publication import PublicationSource
 from app.services import publications
 from app.services.meta_sync_jobs import start_job
+from pydantic import BaseModel, Field, StrictBool
+from app.models.publication import NewsSource
+from app.services import news_monitor
 
 router = APIRouter(prefix="/publications", tags=["Publicaciones"], dependencies=[Depends(get_current_user)])
+
+
+class NewsSourceInput(BaseModel):
+    name: str = Field(min_length=2, max_length=160)
+    url: str = Field(min_length=10, max_length=350)
+
+
+class NewsSourceState(BaseModel):
+    enabled: StrictBool
+
+
+def require_news_manager(user=Depends(get_current_user)):
+    if user.role not in ('ADMIN', 'SECRETARIO'):
+        raise HTTPException(403, 'Administración o Secretaría puede registrar y pausar medios.')
+    return user
+
+
+@router.get('/news/sources')
+def news_sources(db: Session = Depends(get_db)):
+    return news_monitor.list_sources(db)
+
+
+@router.post('/news/sources', status_code=201)
+def register_news_source(payload: NewsSourceInput, db: Session = Depends(get_db), actor=Depends(require_news_manager)):
+    identity = news_monitor.register_source(db, payload.name, payload.url, actor)
+    return next(source for source in news_monitor.list_sources(db) if source['id'] == identity)
+
+
+@router.patch('/news/sources/{source_id}')
+def update_news_source(source_id: str, payload: NewsSourceState, db: Session = Depends(get_db), actor=Depends(require_news_manager)):
+    from app.services.audit import record
+    source = db.get(NewsSource, source_id)
+    if source is None:
+        raise HTTPException(404, 'Medio no encontrado.')
+    source.enabled = payload.enabled
+    record(db, actor, 'news_source_state_changed', source_id, enabled=source.enabled)
+    db.commit()
+    return {'id': source_id, 'enabled': source.enabled}
+
+
+@router.get('/news')
+def news_feed(source_id: str | None = None, search: str | None = Query(None, max_length=200),
+              priority: str | None = Query(None, pattern='^(Alta|Media|Baja|Fuera de foco|Por revisar)$'),
+              territory: str | None = Query(None, pattern='^(Neiva|Huila|Fuera de la región|Sin ubicación confirmada)$'),
+              topic: str | None = Query(None, max_length=100), offset: int = Query(0, ge=0),
+              limit: int = Query(12, ge=1, le=100), order: str = Query('relevance', pattern='^(relevance|recent)$'), db: Session = Depends(get_db)):
+    return news_monitor.feed(db, source_id=source_id, search=search, priority=priority,
+                             territory=territory, topic=topic, order=order, offset=offset, limit=limit)
+
+
+@router.post('/news/update', status_code=202)
+def update_news(db: Session = Depends(get_db), actor=Depends(get_current_user)):
+    from app.services.audit import record
+    job = start_job(db, 'news-monitor')
+    if not job.get('already_running'):
+        record(db, actor, 'news_monitor_requested', job['id'])
+        db.commit()
+    return job
 
 
 def require_source(db, source_id):

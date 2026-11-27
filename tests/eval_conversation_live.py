@@ -32,6 +32,23 @@ def main():
         assert values[key]["stance"] == expected, f"{key}: expected {expected}, got {values[key]['stance']}"
         assert not values[key]["needs_review"], f"{key}: unexpectedly marked for review"
     assert values["angry_support"]["emotion"] == "Enojo o ira"
+    missing = {**context, 'summary': '', 'caption': 'Johan comparte una publicación.', 'source': 'missing', 'ready': False}
+    explicit = [
+        ('explicit_support', 'Excelente trabajo Johan, siga así, lo apoyo.', 'support'),
+        ('explicit_criticism', 'Johan es un mentiroso y nunca cumple nada.', 'criticism'),
+        ('only_criticism', 'Solo critica y critica, nunca propone nada Johan.', 'criticism'),
+        ('unrelated', 'Salmo 23: El Señor es mi pastor; nada me faltará.', 'neutral'),
+        ('tag', 'Pedro Ramírez', 'neutral'),
+        ('third_party', 'El alcalde Germán Casagua no cumple con la ciudad.', 'neutral'),
+        ('mixed', 'Tiene razón Johan con esta denuncia, pero usted nunca propone soluciones.', 'mixed'),
+        ('request_third_party', 'Señor Johan, por favor denuncie a ese alcalde corrupto y pida que devuelvan la plata.', 'support'),
+        ('compare_third_parties', 'No me cae bien Casagua pero ese señor ha hecho más que Gorky, que ese sí se robó todo.', 'neutral'),
+        ('campaign_reproach', 'Haga campaña con sus propuestas Johan, no denigrando de los demás.', 'criticism'),
+    ]
+    values = classify_batch(missing, [{'id': key, 'content': text, 'parent': None} for key, text, _ in explicit], ai_classifier.client)
+    for key, _, expected in explicit:
+        assert values[key]['stance'] == expected, f'{key}: expected {expected}, got {values[key]["stance"]}'
+        assert not values[key]['needs_review'], f'{key}: unexpectedly blocked by missing transcript'
     print("All contextual examples passed")
 
 

@@ -8,7 +8,7 @@ import secrets
 import ssl
 from pathlib import Path
 from app.core.config import settings
-from app.services.email_templates import BRAND_NAME, LOGO_CID, render_otp_email, render_password_changed_email
+from app.services.email_templates import BRAND_NAME, LOGO_CID, render_otp_email, render_password_changed_email, render_welcome_email
 
 logger = logging.getLogger("civia.email")
 
@@ -61,6 +61,18 @@ def _send_security_email(to_email, subject, text_content, html_content):
     except Exception:
         logger.error('No se pudo entregar el correo de seguridad.')
         return False
+
+
+def send_welcome_email(to_email: str, user_name: str, password: str, role: str, login_url: str) -> bool:
+    roles = {'ADMIN': 'Administrador', 'ALCALDE': 'Alcalde', 'SECRETARIO': 'Secretaría', 'OPERADOR': 'Operador'}
+    text = (f'{BRAND_NAME}\n\nHola {user_name}, el administrador creó tu cuenta.\n\n'
+            f'Correo de acceso: {to_email}\nContraseña inicial: {password}\nRol: {roles.get(role, role)}\n\n'
+            f'Ingresar a la plataforma: {login_url}\n\n'
+            'Después de ingresar, cambia la contraseña desde Mi cuenta y seguridad. '
+            'Usa al menos 10 caracteres, mayúscula, minúscula, número y carácter especial.\n'
+            'Conserva estas credenciales de forma privada. Si no reconoces esta cuenta, contacta al administrador.')
+    return _send_security_email(to_email, f'Tus credenciales de acceso | {BRAND_NAME}', text,
+                                render_welcome_email(user_name, to_email, password, role, login_url))
 
 
 def send_otp_email(to_email: str, user_name: str, otp_code: str) -> bool:
